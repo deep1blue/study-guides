@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strings: The Array's Tricky Sibling — Study Guide | The Infra Notebook</title>
+<meta name="description" content="Strings are immutable arrays of Unicode code points: the restring tax (+= loop = Θ(n²), join = Θ(n)), converging two pointers, expand-around-center, and the encoding layers.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  pre .cm{color:#9a8f7d} pre .hl{color:#f6b26b}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Algorithms L2</div>
+<h1>Strings: The Array's Tricky Sibling</h1>
+<div class="dateline">September 29, 2026 · Interview-prep series</div>
+<p class="lede">A Python string is an immutable array of Unicode code points. L1's contiguity
+bargain carries over unchanged — Θ(1) indexing — but immutability turns every "edit" into a
+rebuild. Price the rebuilds (the <code>+=</code> loop hides a Θ(n²)), then let symmetry do
+the work: converging two pointers and expand-around-center.</p>
+
+<figure class="hero">
+  <img src="assets/hero-strings.webp" alt="Hand-drawn illustration of hands converging on a ribbon of paper letters from both ends">
+  <figcaption>The bead string: glued shut, so every change restrings the whole cord.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Builds on L1 — and one new rule</h2>
+<p>L1's contiguity bargain is the whole foundation: position is arithmetic
+(<code>address = base + i × w</code>), so <code>s[i]</code> is Θ(1); the middle is expensive
+because everything after it shifts. A string inherits this table line for line. The new rule
+is <strong>immutability</strong>: you cannot change any bead on the cord. So even the
+<em>end</em> costs Θ(n) to "edit" — <code>s + "x"</code> copies all of s. Three consequences
+to lock in:</p>
+<ul>
+<li>Every string "edit" is a rebuild. <code>s[:i] + new + s[i+1:]</code> makes three fresh copies.</li>
+<li>Immutability is a feature, not a bug: strings are hashable (dict keys — L5 needs this) and thread-safe.</li>
+<li>"In-place" string problems (LC 344, reverse string) mean: convert to a list, do the pointer dance, <code>"".join</code> at the end.</li>
+</ul>
+<p>A "character" is three layers. The <strong>grapheme</strong> is what a human sees (one
+letter, one emoji). The <strong>code point</strong> is the Unicode number — and it is what
+Python counts. The <strong>bytes</strong> are the UTF-8 encoding, one to four bytes per code
+point:</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 250" role="img" aria-label="Encoding layers: graphemes, code points, bytes">
+  <text x="10" y="28" font-size="14" font-weight="bold" fill="#2b2620">what you see (graphemes):</text>
+  <g font-size="26">
+    <text x="300" y="40">c</text><text x="360" y="40">a</text><text x="420" y="40">f</text>
+    <text x="480" y="40">é</text><text x="540" y="40">👨‍👩‍👧</text>
+  </g>
+  <text x="660" y="40" font-size="14" font-style="italic" fill="#6f655a">5 graphemes</text>
+  <text x="10" y="88" font-size="14" font-weight="bold" fill="#2b2620">what Python counts (code points):</text>
+  <g font-size="13" font-family="ui-monospace,Menlo,monospace">
+    <rect x="300" y="100" width="80" height="34" rx="6" fill="#efe7d4"/><text x="340" y="122" text-anchor="middle" fill="#2b2620">U+0043</text>
+    <rect x="385" y="100" width="80" height="34" rx="6" fill="#efe7d4"/><text x="425" y="122" text-anchor="middle" fill="#2b2620">U+0061</text>
+    <rect x="470" y="100" width="80" height="34" rx="6" fill="#efe7d4"/><text x="510" y="122" text-anchor="middle" fill="#2b2620">U+0066</text>
+    <rect x="555" y="100" width="80" height="34" rx="6" fill="#efe7d4"/><text x="595" y="122" text-anchor="middle" fill="#2b2620">U+00E9</text>
+  </g>
+  <g font-size="12" font-family="ui-monospace,Menlo,monospace">
+    <rect x="300" y="142" width="62" height="32" rx="6" fill="#e6f2e8"/><text x="331" y="163" text-anchor="middle" fill="#2b2620">U+1F468</text>
+    <rect x="366" y="142" width="62" height="32" rx="6" fill="#e6f2e8"/><text x="397" y="163" text-anchor="middle" fill="#2b2620">U+200D</text>
+    <rect x="432" y="142" width="62" height="32" rx="6" fill="#e6f2e8"/><text x="463" y="163" text-anchor="middle" fill="#2b2620">U+1F469</text>
+    <rect x="498" y="142" width="62" height="32" rx="6" fill="#e6f2e8"/><text x="529" y="163" text-anchor="middle" fill="#2b2620">U+200D</text>
+    <rect x="564" y="142" width="62" height="32" rx="6" fill="#e6f2e8"/><text x="595" y="163" text-anchor="middle" fill="#2b2620">U+1F467</text>
+  </g>
+  <text x="640" y="133" font-size="14" font-style="italic" fill="#6f655a">len() = 9</text>
+  <text x="10" y="212" font-size="14" font-weight="bold" fill="#2b2620">UTF-8 bytes on the wire:</text>
+  <text x="300" y="212" font-size="14" font-family="ui-monospace,Menlo,monospace" fill="#2b2620">63 61 66 C3 A9 | 20 bytes for the emoji</text>
+  <text x="640" y="212" font-size="14" font-style="italic" fill="#6f655a">25 bytes</text>
+</svg>
+<div class="cap">Figure 1 — One visible emoji is five code points and twenty bytes. len() counts the middle layer.</div>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — canonical references</h4>
+<ul>
+<li><a href="https://cp-algorithms.com/string/prefix-function.html">cp-algorithms: Prefix function (KMP)</a> — the canonical write-up of linear-time substring search. Skim the intro now; the full article lands at L43.</li>
+<li><a href="https://docs.python.org/3/library/stdtypes.html">Python docs: Text Sequence Type — str</a> — the authoritative list of string methods and their (immutable) semantics.</li>
+<li><a href="https://wiki.python.org/moin/TimeComplexity">Python TimeComplexity wiki</a> — verified per-operation costs for strings and lists; check it before claiming a cost in an interview.</li>
+<li><em>CLRS</em>, Chapter 32 (String Matching) — the textbook treatment: naive Θ(n·m) search, then KMP in O(n+m).</li>
+</ul>
+</div>
+
+<h2><span class="n">2</span>The math: the restring tax, derived</h2>
+<p><strong>Derivation 1 — <code>s += c</code> in a loop.</strong> The k-th append copies the
+whole k−1-character string plus the new char: k units of work. Total over n appends:</p>
+<div class="formula">1 + 2 + … + n = n(n+1)/2 = Θ(n²)</div>
+<p>With <code>"".join(parts)</code>: a list of parts holds Θ(n) characters total, then one pass
+writes each character once: Θ(n). For n = 10,000, the <code>+=</code> loop does roughly
+<strong>50 million</strong> character copies; join does 10,000. Same output, 5,000× less work.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="Schlemiel the painter versus join">
+  <text x="20" y="30" font-size="15" font-weight="bold" fill="#2b2620">s += c in a loop — copy cost per iteration</text>
+  <g>
+    <rect x="20" y="48" width="60" height="26" fill="#f3ddc8" stroke="#c05621"/><text x="86" y="66" font-size="12" fill="#6f655a">k=1</text>
+    <rect x="20" y="78" width="120" height="26" fill="#f3ddc8" stroke="#c05621"/><text x="146" y="96" font-size="12" fill="#6f655a">k=2</text>
+    <rect x="20" y="108" width="180" height="26" fill="#f3ddc8" stroke="#c05621"/><text x="206" y="126" font-size="12" fill="#6f655a">k=3</text>
+    <rect x="20" y="138" width="240" height="26" fill="#f3ddc8" stroke="#c05621"/><text x="266" y="156" font-size="12" fill="#6f655a">k=4</text>
+    <rect x="20" y="168" width="300" height="26" fill="#f3ddc8" stroke="#c05621"/><text x="326" y="186" font-size="12" fill="#6f655a">k=5</text>
+    <rect x="20" y="198" width="345" height="26" fill="#f3ddc8" stroke="#c05621" stroke-dasharray="6 4"/><text x="371" y="216" font-size="12" fill="#6f655a">… k=n</text>
+  </g>
+  <text x="20" y="252" font-size="14" font-weight="bold" fill="#c05621">total = Σk = n(n+1)/2 = Θ(n²)</text>
+  <text x="400" y="30" font-size="15" font-weight="bold" fill="#2b2620">"".join(parts) — one pass</text>
+  <g font-size="12" font-family="ui-monospace,Menlo,monospace">
+    <rect x="400" y="48" width="52" height="30" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="426" y="68" text-anchor="middle" fill="#2b2620">part1</text>
+    <rect x="458" y="48" width="52" height="30" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="484" y="68" text-anchor="middle" fill="#2b2620">part2</text>
+    <rect x="516" y="48" width="52" height="30" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="542" y="68" text-anchor="middle" fill="#2b2620">part3</text>
+    <rect x="574" y="48" width="52" height="30" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="600" y="68" text-anchor="middle" fill="#2b2620">…</text>
+  </g>
+  <rect x="400" y="100" width="226" height="26" fill="#d8e8dc" stroke="#1f6f6b"/>
+  <text x="513" y="118" text-anchor="middle" font-size="12" fill="#2b2620">single allocation, one pass over n chars</text>
+  <line x1="426" y1="82" x2="426" y2="98" stroke="#1f6f6b" stroke-width="2"/>
+  <line x1="484" y1="82" x2="484" y2="98" stroke="#1f6f6b" stroke-width="2"/>
+  <line x1="542" y1="82" x2="542" y2="98" stroke="#1f6f6b" stroke-width="2"/>
+  <text x="400" y="162" font-size="14" font-weight="bold" fill="#1f6f6b">total = Θ(n)</text>
+  <text x="400" y="196" font-size="13" font-style="italic" fill="#6f655a">CPython also over-allocates on += in the</text>
+  <text x="400" y="216" font-size="13" font-style="italic" fill="#6f655a">refcount==1 case — but in a real loop the</text>
+  <text x="400" y="236" font-size="13" font-style="italic" fill="#6f655a">Θ(n²) still shows up. Never rely on it.</text>
+</svg>
+<div class="cap">Figure 2 — Schlemiel the Painter: each append repaints the whole wall. join paints once.</div>
+</div>
+
+<p><strong>Derivation 2 — expand-around-center vs brute force.</strong> There are Θ(n²)
+substrings and each palindrome check costs O(n): brute force is Θ(n³). Every palindrome has a
+center, and there are 2n−1 of them (n characters + n−1 gaps between characters). Expanding
+from each center costs O(n):</p>
+<div class="formula">2n−1 centers × O(n) expansion = O(n²) time, O(1) extra space</div>
+<p>One whole order of magnitude bought by symmetry alone. (Manacher's O(n) algorithm exists
+and is baroque — interviewers don't expect it. Know its name, not its code.)</p>
+
+<div class="deepdive">
+<h4>🎥 Deep dive — stellar explainers</h4>
+<ul>
+<li><a href="https://neetcode.io/roadmap">NeetCode roadmap</a> — best for: the Strings section's ordered problem ladder (LC 125 → 242 → 3 → 5), each with a pattern-first video walkthrough. His "Valid Palindrome" video is the cleanest two-pointer demo on the internet.</li>
+<li><a href="https://www.youtube.com/@abdul_bari">Abdul Bari</a> — best for: slow, hand-walked derivations of why string algorithms cost what they do. Watch his string-matching videos before L43.</li>
+</ul>
+</div>
+
+<h2><span class="n">3</span>The code: symmetry does the work</h2>
+<p><strong>Problem 1 — Valid Palindrome (LC 125).</strong> L1's read pointers, now walking from
+<em>both</em> ends toward the middle — the seed of L13 (two pointers):</p>
+<pre>def is_palindrome(s):
+    <span class="cm"># Two pointers converge from both ends.</span>
+    <span class="cm"># Invariant: everything outside [left, right] has been checked</span>
+    <span class="cm"># and matched. Each char visited at most once -&gt; Theta(n), O(1) space.</span>
+    left, right = 0, len(s) - 1
+    while left &lt; right:
+        if not s[left].isalnum():   <span class="cm"># skip the noise</span>
+            left += 1
+            continue
+        if not s[right].isalnum():
+            right -= 1
+            continue
+        if s[left].lower() != s[right].lower():
+            return False
+        left += 1
+        right -= 1
+    return True</pre>
+
+<div class="diagram">
+<svg viewBox="0 0 760 190" role="img" aria-label="Two-pointer convergence on RACECAR">
+  <g font-size="18" font-weight="bold" font-family="ui-monospace,Menlo,monospace">
+    <rect x="110" y="40" width="64" height="56" rx="8" fill="#f3ddc8" stroke="#c05621"/><text x="142" y="76" text-anchor="middle" fill="#2b2620">R</text>
+    <rect x="184" y="40" width="64" height="56" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="216" y="76" text-anchor="middle" fill="#2b2620">A</text>
+    <rect x="258" y="40" width="64" height="56" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="290" y="76" text-anchor="middle" fill="#2b2620">C</text>
+    <rect x="332" y="40" width="64" height="56" rx="8" fill="#e6f2e8" stroke="#1f6f6b"/><text x="364" y="76" text-anchor="middle" fill="#2b2620">E</text>
+    <rect x="406" y="40" width="64" height="56" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="438" y="76" text-anchor="middle" fill="#2b2620">C</text>
+    <rect x="480" y="40" width="64" height="56" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="512" y="76" text-anchor="middle" fill="#2b2620">A</text>
+    <rect x="554" y="40" width="64" height="56" rx="8" fill="#f3ddc8" stroke="#c05621"/><text x="586" y="76" text-anchor="middle" fill="#2b2620">R</text>
+  </g>
+  <g stroke="#c05621" stroke-width="2.5" fill="none">
+    <line x1="142" y1="112" x2="142" y2="140"/><polygon points="142,148 135,136 149,136" fill="#c05621" stroke="none"/>
+    <line x1="586" y1="112" x2="586" y2="140"/><polygon points="586,148 579,136 593,136" fill="#c05621" stroke="none"/>
+  </g>
+  <text x="142" y="172" text-anchor="middle" font-size="14" font-style="italic" fill="#c05621">left</text>
+  <text x="586" y="172" text-anchor="middle" font-size="14" font-style="italic" fill="#c05621">right</text>
+  <text x="364" y="140" text-anchor="middle" font-size="13" font-style="italic" fill="#6f655a">outer pair matched → pointers converge</text>
+  <text x="364" y="162" text-anchor="middle" font-size="13" font-style="italic" fill="#6f655a">each char visited ≤ once → Θ(n), O(1) space</text>
+</svg>
+<div class="cap">Figure 3 — Converging pointers. The palindrome's symmetry means you only ever walk inward.</div>
+</div>
+
+<p><strong>Problem 2 — Longest Palindromic Substring (LC 5).</strong> Expand around the center
+instead of enumerating substrings:</p>
+<pre>def longest_palindrome(s):
+    <span class="cm"># Every palindrome has a center: 2n-1 of them</span>
+    <span class="cm"># (n chars + n-1 gaps). Expand from each as far as the</span>
+    <span class="cm"># symmetry holds; keep the longest. 2n-1 x O(n) = O(n^2), O(1) space.</span>
+    def expand(l, r):
+        while l &gt;= 0 and r &lt; len(s) and s[l] == s[r]:
+            l -= 1
+            r += 1
+        return r - l - 1  <span class="cm"># span of the found palindrome</span>
+
+    start, best = 0, 0
+    for i in range(len(s)):
+        length = max(expand(i, i),      <span class="cm"># odd: center on char i</span>
+                     expand(i, i + 1))  <span class="cm"># even: center between i, i+1</span>
+        if length &gt; best:
+            best = length
+            start = i - (length - 1) // 2
+    return s[start:start + best]</pre>
+
+<div class="diagram">
+<svg viewBox="0 0 760 210" role="img" aria-label="Expand around center on BABAD">
+  <g font-size="18" font-weight="bold" font-family="ui-monospace,Menlo,monospace">
+    <rect x="230" y="30" width="56" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="258" y="63" text-anchor="middle" fill="#2b2620">B</text>
+    <rect x="294" y="30" width="56" height="52" rx="8" fill="#f3ddc8" stroke="#c05621"/><text x="322" y="63" text-anchor="middle" fill="#2b2620">A</text>
+    <rect x="358" y="30" width="56" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="386" y="63" text-anchor="middle" fill="#2b2620">B</text>
+    <rect x="422" y="30" width="56" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="450" y="63" text-anchor="middle" fill="#2b2620">A</text>
+    <rect x="486" y="30" width="56" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="514" y="63" text-anchor="middle" fill="#2b2620">D</text>
+  </g>
+  <polygon points="322,92 314,106 330,106" fill="#c05621"/>
+  <text x="322" y="128" text-anchor="middle" font-size="13" font-style="italic" fill="#c05621">odd center: char A (index 1)</text>
+  <g stroke="#c05621" stroke-width="2" fill="none">
+    <line x1="294" y1="96" x2="244" y2="96"/><polygon points="236,96 248,90 248,102" fill="#c05621" stroke="none"/>
+    <line x1="350" y1="96" x2="400" y2="96"/><polygon points="408,96 396,90 396,102" fill="#c05621" stroke="none"/>
+  </g>
+  <text x="322" y="80" text-anchor="middle" font-size="13" font-weight="bold" fill="#2b2620">s[0] == s[2] → B == B ✓</text>
+  <text x="150" y="168" font-size="14" font-style="italic" fill="#6f655a">this center reports "BAB" (length 3): expand(1,1) widens to s[0..2], then s[−1] stops it</text>
+  <text x="150" y="192" font-size="14" font-style="italic" fill="#6f655a">each of the 2n−1 centers reports its own longest; the best wins (the center at index 2 finds "ABA", also length 3)</text>
+</svg>
+<div class="cap">Figure 4 — One odd center expanding. Even centers live between characters; both kinds get tried.</div>
+</div>
+
+<div class="deepdive">
+<h4>🎯 Deep dive — the four representative problems</h4>
+<ul>
+<li><a href="https://leetcode.com/problems/valid-palindrome/">Valid Palindrome (125)</a> — the converging two-pointer check above; the entry drug to L13.</li>
+<li><a href="https://leetcode.com/problems/longest-palindromic-substring/">Longest Palindromic Substring (5)</a> — expand-around-center, O(n²); the DP table version arrives at L40.</li>
+<li><a href="https://leetcode.com/problems/longest-substring-without-repeating-characters/">Longest Substring Without Repeating Characters (3)</a> — the flagship of L14 (sliding window). Peek, don't solve — its lesson is next week.</li>
+<li><a href="https://leetcode.com/problems/group-anagrams/">Group Anagrams (49)</a> — "anagram" means stop comparing, start counting: the frequency pattern that seeds L5/L6.</li>
+</ul>
+</div>
+
+<h2><span class="n">4</span>How to spot it: the string tells</h2>
+<ul>
+<li><strong>"Palindrome"</strong> → symmetric two pointers (check) or expand-around-center (longest).</li>
+<li><strong>"Anagram"</strong> → count characters, don't compare strings (L5/L6 seeds).</li>
+<li><strong>"Longest/shortest substring" with a property</strong> → sliding window (L14).</li>
+<li><strong>Building a string piece by piece</strong> → collect parts, <code>"".join</code> once. The <code>+=</code> trap is the #1 string performance question.</li>
+<li><strong>"In-place" on a string</strong> → list of chars, pointer dance, <code>"".join</code>.</li>
+<li><strong>"Encode and decode"</strong> → design the delimiter/escaping yourself (LC 271, the classic follow-up).</li>
+</ul>
+
+<h2><span class="n">5</span>The 7 gotchas — know the <em>why</em></h2>
+
+<div class="gotcha"><strong>1. <code>+=</code> in a loop is Θ(n²).</strong> Each append restrings the cord. Collect in a list, <code>join</code> once — and say the Σk derivation out loud.</div>
+<div class="gotcha"><strong>2. String methods return new strings.</strong> <code>s.lower()</code> alone does nothing; you must reassign. The mutation never happens — that <em>is</em> immutability, and it bites exactly once.</div>
+<div class="gotcha"><strong>3. Slicing copies.</strong> <code>s[i:j]</code> is Θ(j−i); inside a loop over n positions it's a hidden quadratic — the L7 trap in a string costume.</div>
+<div class="gotcha"><strong>4. Negative-index wrap.</strong> <code>s[-1]</code> is the <em>last</em> char, not an error. A two-pointer that overshoots wraps silently to the wrong end.</div>
+<div class="gotcha"><strong>5. Normalization first.</strong> "A man, a plan, a canal: Panama" only palindromes after lowercasing and stripping non-alphanumerics. Decide where the cleaning lives — inline or up front.</div>
+<div class="gotcha"><strong>6. Off-by-one in expand-around-center.</strong> 2n−1 centers, not n; even palindromes live <em>between</em> characters. The span formula <code>r - l - 1</code> falls out of where the failing indices land.</div>
+<div class="gotcha"><strong>7. <code>len()</code> counts code points, not graphemes.</strong> One visible character can be several code points. Interviews assume ASCII; production remembers the three layers.</div>
+
+<h2><span class="n">6</span>Connects to</h2>
+<p><strong>L13 (Two pointers)</strong> — today's converging walk becomes a full technique.
+<strong>L14 (Sliding window)</strong> — longest substring without repeating characters.
+<strong>L5/L6 (Hash maps &amp; frequency)</strong> — anagrams are counting, not comparing.
+<strong>L31 (Tries)</strong> — when you have many strings, not one. <strong>L43 (String
+matching)</strong> — KMP and the O(n+m) substring search that fixes naive Θ(n·m).
+<strong>L7</strong> — the complexity vocabulary you just used to price every rebuild.</p>
+
+<h2><span class="n">7</span>Self-test</h2>
+<p>Cover the answers. Say each one aloud until it's clean.</p>
+
+<details><summary>1. Derive the cost of <code>s += c</code> in a loop from scratch.</summary>
+<p>The k-th append copies k−1 old chars plus the new one: k units of work. Total = 1 + 2 + … + n = n(n+1)/2 = Θ(n²). Name it: Schlemiel the Painter.</p></details>
+
+<details><summary>2. What does <code>"".join(parts)</code> change about that math?</summary>
+<p>The list holds Θ(n) characters total; join does one allocation and one pass, writing each char once: Θ(n). The copies per iteration disappear because there are no iterations of rebuilding.</p></details>
+
+<details><summary>3. <code>len("café👨‍👩‍👧")</code> — and what does it <em>not</em> count?</summary>
+<p>9 — it counts code points (4 for "café", 5 for the family emoji), not the 5 graphemes a human sees, and not the 25 UTF-8 bytes on the wire.</p></details>
+
+<details><summary>4. Expand-around-center: why 2n−1 centers and not n?</summary>
+<p>Odd palindromes center on a character (n of them); even palindromes center <em>between</em> two characters (n−1 gaps). Skip the even centers and you miss "abba".</p></details>
+
+<details><summary>5. In <code>is_palindrome</code>, the pointers cross with no mismatch. Return value, and why?</summary>
+<p><code>True</code>. The invariant: everything outside [left, right] matched. Crossing means nothing is left unchecked — all pairs matched.</p></details>
+
+<details><summary>6. <code>s == s[::-1]</code> also checks palindromes. Why might an interviewer want the two-pointer version?</summary>
+<p>The slice is Θ(n) extra space plus a full copy; two pointers are O(1) space and can short-circuit on the first mismatch. Know both; lead with trade-offs.</p></details>
+
+<details><summary>7. Brute-force longest palindrome is Θ(n³) — where does each factor come from?</summary>
+<p>Θ(n²) substrings (n choices of start × O(n) choices of end) times an O(n) palindrome check per substring. Expand-around-center kills the middle factor: 2n−1 centers × O(n) expansion.</p></details>
+
+<details><summary>8. You have 10,000 strings and need all with a given prefix. Why is a trie (L31) better than scanning?</summary>
+<p>Scanning compares the prefix against every string: O(total length). A trie shares common prefixes, so each query costs O(prefix length) regardless of how many strings you stored.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"A Python string is an immutable array of Unicode code points — same Θ(1) indexing as an
+array from the contiguity bargain, but every edit is a rebuild, so appending in a loop is
+Θ(n²) while collecting parts and calling join once is Θ(n). The two load-bearing patterns
+are two pointers converging from both ends for symmetry problems like palindromes — Θ(n)
+time, O(1) space — and expand-around-center for the longest palindromic substring: 2n−1
+centers at O(n) each is O(n²) time in O(1) space, a full order better than brute force's
+O(n³). The whole string lesson: treat them as arrays, respect immutability, and let
+symmetry do the work."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · September 2026<br>
+  Builds on: L1 Arrays (the contiguity bargain) · Connects to: L13 two pointers, L14 sliding window, L31 tries, L43 string matching
+</footer>
+
+</div>
+</body>
+</html>
