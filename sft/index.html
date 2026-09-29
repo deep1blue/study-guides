@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SFT Mechanics — Study Guide | The Infra Notebook</title>
+<meta name="description" content="Supervised fine-tuning, from intuition to mechanism to the math that matters: chat templates, loss masking, and why SFT quality decides RLHF quality.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  pre .cm{color:#9a8f7d} pre .hl{color:#f6b26b}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Post-Training B1</div>
+<h1>SFT Mechanics: Teaching the Model Its Manners</h1>
+<div class="dateline">September 28, 2026 · Interview-prep series</div>
+<p class="lede">Supervised fine-tuning is the step that turns a next-token predictor into an
+instruction follower. The loss function barely changes from pretraining — the masking
+decision is the whole trick. This guide goes intuition → mechanism → math, with the
+failure modes interviewers actually probe.</p>
+
+<figure class="hero">
+  <img src="assets/hero-sft-study.webp" alt="Illustration of a language model learning polite dialogue from scattered tokens">
+  <figcaption>From document-completer to assistant: SFT installs the instruction-following role.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Why SFT exists</h2>
+<p>A base (pretrained) model computes <em>P(next token | previous tokens)</em> over raw
+internet text. It is a document-completer, not an assistant. Prompt it with
+<code>Q: write a haiku about GPUs / A:</code> and it may emit three more questions —
+because on the internet, a Q/A list continuing with more Q/A pairs is a perfectly
+plausible continuation. The model has no notion of "you are being asked to do
+something." SFT installs that notion.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="Base model versus SFT model behavior">
+  <rect x="10" y="10" width="350" height="280" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="185" y="42" text-anchor="middle" font-size="17" font-weight="bold" fill="#2b2620">Base model</text>
+  <rect x="30" y="58" width="310" height="52" rx="6" fill="#efe7d4"/>
+  <text x="185" y="80" text-anchor="middle" font-size="13" fill="#2b2620">Q: write a haiku about GPUs</text>
+  <text x="185" y="100" text-anchor="middle" font-size="13" fill="#2b2620">A:</text>
+  <text x="185" y="132" text-anchor="middle" font-size="22" fill="#6f655a">↓ completes the document ↓</text>
+  <rect x="30" y="148" width="310" height="52" rx="6" fill="#f3e2e2"/>
+  <text x="185" y="170" text-anchor="middle" font-size="13" fill="#2b2620">Q: write a limerick about CPUs</text>
+  <text x="185" y="190" text-anchor="middle" font-size="13" fill="#2b2620">Q: write a sonnet about TPUs …</text>
+  <text x="185" y="232" text-anchor="middle" font-size="14" font-style="italic" fill="#a03d2d">P(next text) — no manners</text>
+  <text x="185" y="256" text-anchor="middle" font-size="14" font-style="italic" fill="#a03d2d">more questions is plausible online</text>
+
+  <rect x="400" y="10" width="350" height="280" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="575" y="42" text-anchor="middle" font-size="17" font-weight="bold" fill="#2b2620">After SFT</text>
+  <rect x="420" y="58" width="310" height="52" rx="6" fill="#efe7d4"/>
+  <text x="575" y="80" text-anchor="middle" font-size="13" fill="#2b2620">Q: write a haiku about GPUs</text>
+  <text x="575" y="100" text-anchor="middle" font-size="13" fill="#2b2620">A:</text>
+  <text x="575" y="132" text-anchor="middle" font-size="22" fill="#6f655a">↓ follows the instruction ↓</text>
+  <rect x="420" y="148" width="310" height="52" rx="6" fill="#e6f2e8"/>
+  <text x="575" y="170" text-anchor="middle" font-size="13" fill="#2b2620">Silicon dreams ignite,</text>
+  <text x="575" y="190" text-anchor="middle" font-size="13" fill="#2b2620">parallel thoughts take their flight…</text>
+  <text x="575" y="232" text-anchor="middle" font-size="14" font-style="italic" fill="#1f6f6b">P(response | instruction)</text>
+  <text x="575" y="256" text-anchor="middle" font-size="14" font-style="italic" fill="#1f6f6b">behavior cloned from demos</text>
+</svg>
+<div class="cap">Figure 1 — Same prompt, different training. Pretraining built the knowledge; SFT elicits the assistant persona.</div>
+</div>
+
+<p><strong>One-line version:</strong> SFT converts <em>P(next text)</em> into
+<em>P(response | instruction)</em>. Pretraining is raising a brilliant kid with no
+manners; SFT is the short, careful schooling.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the papers</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/2203.02155">Training language models to follow instructions with human feedback</a> (Ouyang et al., 2022) — the InstructGPT paper; SFT as step one of the alignment pipeline.</li>
+<li><a href="https://arxiv.org/abs/2305.11206">LIMA: Less Is More for Alignment</a> (Zhou et al., 2023) — 1,000 curated examples align a 65B model; the Superficial Alignment Hypothesis.</li>
+<li><a href="https://arxiv.org/abs/2305.15717">The False Promise of Imitating Proprietary LLMs</a> (Gudibande et al., 2023) — why imitation-style SFT data can fool benchmarks while missing capability.</li>
+</ul>
+</div>
+
+<h2><span class="n">2</span>Chat templates — the silent killer</h2>
+<p>Roles are wrapped in special tokens. The model only ever learns the <em>exact token
+format</em> it trained on. Train with template A, serve with template B → no error, no
+crash, just degraded answers. Weeks of work lost to a string-format mismatch.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 150" role="img" aria-label="Chat template token layout">
+  <g font-size="13" font-family="ui-monospace,Menlo,monospace">
+    <rect x="10" y="30" width="105" height="40" rx="6" fill="#d8d2c4"/><text x="62" y="55" text-anchor="middle" fill="#2b2620">&lt;|system|&gt;</text>
+    <rect x="120" y="30" width="150" height="40" rx="6" fill="#d8d2c4"/><text x="195" y="55" text-anchor="middle" fill="#2b2620">You are helpful.</text>
+    <rect x="275" y="30" width="75" height="40" rx="6" fill="#d8d2c4"/><text x="312" y="55" text-anchor="middle" fill="#2b2620">&lt;|end|&gt;</text>
+    <rect x="355" y="30" width="95" height="40" rx="6" fill="#cfe0f5"/><text x="402" y="55" text-anchor="middle" fill="#2b2620">&lt;|user|&gt;</text>
+    <rect x="455" y="30" width="140" height="40" rx="6" fill="#cfe0f5"/><text x="525" y="55" text-anchor="middle" fill="#2b2620">Write a haiku</text>
+    <rect x="600" y="30" width="75" height="40" rx="6" fill="#cfe0f5"/><text x="637" y="55" text-anchor="middle" fill="#2b2620">&lt;|end|&gt;</text>
+    <rect x="10" y="85" width="120" height="40" rx="6" fill="#f3ddc8"/><text x="70" y="110" text-anchor="middle" fill="#2b2620">&lt;|assistant|&gt;</text>
+    <rect x="135" y="85" width="200" height="40" rx="6" fill="#f3ddc8"/><text x="235" y="110" text-anchor="middle" fill="#2b2620">Silicon dreams…</text>
+    <rect x="340" y="85" width="75" height="40" rx="6" fill="#f3ddc8"/><text x="377" y="110" text-anchor="middle" fill="#2b2620">&lt;|end|&gt;</text>
+  </g>
+  <text x="440" y="112" font-size="15" font-style="italic" fill="#6f655a">gray/blue = prompt (−100) · orange = response (loss)</text>
+</svg>
+<div class="cap">Figure 2 — Token layout of one SFT example. Training and inference templates must match token-for-token.</div>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — templates in practice</h4>
+<ul>
+<li><a href="https://huggingface.co/docs/transformers/chat_templating">Hugging Face: Chat templating</a> — how <code>apply_chat_template</code> works and why mismatches bite.</li>
+<li><a href="https://huggingface.co/docs/trl/sft_trainer">TRL: SFTTrainer documentation</a> — the standard SFT loop, masking, and packing options.</li>
+</ul>
+</div>
+<h2><span class="n">3</span>Loss masking — the whole trick</h2>
+<p>Standard causal-LM training: labels = input ids shifted left by one, cross-entropy over
+<em>all</em> positions. For SFT we set every prompt (user/system) token's label to
+<strong>−100</strong>, which is <code>CrossEntropyLoss</code>'s
+<code>ignore_index</code> — those positions contribute <strong>zero loss and zero
+gradient</strong>.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 240" role="img" aria-label="Loss masking token diagram">
+  <text x="10" y="25" font-size="15" font-weight="bold" fill="#2b2620">tokens:</text>
+  <g font-size="12.5" font-family="ui-monospace,Menlo,monospace">
+    <rect x="90" y="8" width="80" height="36" rx="6" fill="#e4ded2"/><text x="130" y="31" text-anchor="middle" fill="#6f655a">&lt;|user|&gt;</text>
+    <rect x="175" y="8" width="70" height="36" rx="6" fill="#e4ded2"/><text x="210" y="31" text-anchor="middle" fill="#6f655a">Write</text>
+    <rect x="250" y="8" width="70" height="36" rx="6" fill="#e4ded2"/><text x="285" y="31" text-anchor="middle" fill="#6f655a">haiku</text>
+    <rect x="325" y="8" width="70" height="36" rx="6" fill="#e4ded2"/><text x="360" y="31" text-anchor="middle" fill="#6f655a">&lt;|end|&gt;</text>
+    <rect x="400" y="8" width="105" height="36" rx="6" fill="#f3ddc8"/><text x="452" y="31" text-anchor="middle" fill="#2b2620">&lt;|assistant|&gt;</text>
+    <rect x="510" y="8" width="70" height="36" rx="6" fill="#f3ddc8"/><text x="545" y="31" text-anchor="middle" fill="#2b2620">Silicon</text>
+    <rect x="585" y="8" width="70" height="36" rx="6" fill="#f3ddc8"/><text x="620" y="31" text-anchor="middle" fill="#2b2620">dreams</text>
+    <rect x="660" y="8" width="70" height="36" rx="6" fill="#f3ddc8"/><text x="695" y="31" text-anchor="middle" fill="#2b2620">&lt;|end|&gt;</text>
+  </g>
+  <text x="10" y="85" font-size="15" font-weight="bold" fill="#2b2620">labels:</text>
+  <g font-size="12.5" font-family="ui-monospace,Menlo,monospace">
+    <rect x="90" y="68" width="80" height="36" rx="6" fill="#efe9db"/><text x="130" y="91" text-anchor="middle" fill="#a39a88">−100</text>
+    <rect x="175" y="68" width="70" height="36" rx="6" fill="#efe9db"/><text x="210" y="91" text-anchor="middle" fill="#a39a88">−100</text>
+    <rect x="250" y="68" width="70" height="36" rx="6" fill="#efe9db"/><text x="285" y="91" text-anchor="middle" fill="#a39a88">−100</text>
+    <rect x="325" y="68" width="70" height="36" rx="6" fill="#efe9db"/><text x="360" y="91" text-anchor="middle" fill="#a39a88">−100</text>
+    <rect x="400" y="68" width="105" height="36" rx="6" fill="#fdeeda"/><text x="452" y="91" text-anchor="middle" fill="#c05621">Silicon</text>
+    <rect x="510" y="68" width="70" height="36" rx="6" fill="#fdeeda"/><text x="545" y="91" text-anchor="middle" fill="#c05621">dreams</text>
+    <rect x="585" y="68" width="70" height="36" rx="6" fill="#fdeeda"/><text x="620" y="91" text-anchor="middle" fill="#c05621">&lt;|end|&gt;</text>
+    <rect x="660" y="68" width="70" height="36" rx="6" fill="#efe9db"/><text x="695" y="91" text-anchor="middle" fill="#a39a88">−100</text>
+  </g>
+  <g stroke="#c05621" stroke-width="2.5" fill="none">
+    <line x1="452" y1="112" x2="452" y2="150"/><polygon points="452,158 445,146 459,146" fill="#c05621" stroke="none"/>
+    <line x1="545" y1="112" x2="545" y2="150"/><polygon points="545,158 538,146 552,146" fill="#c05621" stroke="none"/>
+    <line x1="620" y1="112" x2="620" y2="150"/><polygon points="620,158 613,146 627,146" fill="#c05621" stroke="none"/>
+  </g>
+  <g stroke="#c9c0ae" stroke-width="2" stroke-dasharray="5 4">
+    <line x1="130" y1="112" x2="130" y2="140"/><line x1="210" y1="112" x2="210" y2="140"/>
+    <line x1="285" y1="112" x2="285" y2="140"/><line x1="360" y1="112" x2="360" y2="140"/>
+    <line x1="695" y1="112" x2="695" y2="140"/>
+  </g>
+  <text x="130" y="180" font-size="14" fill="#6f655a">no gradient</text>
+  <text x="480" y="180" font-size="14" font-weight="bold" fill="#c05621">gradient flows here only</text>
+  <text x="10" y="218" font-size="14" font-style="italic" fill="#6f655a">Forget the masking → the model trains on user text too → it learns to roleplay the human instead of answering.</text>
+</svg>
+<div class="cap">Figure 3 — Masked labels. Prompt positions are −100 (ignore_index): no loss, no gradient. Only assistant-response tokens teach.</div>
+</div>
+
+<h3>Multi-turn masking</h3>
+<p>Conversation: user, assistant, user, assistant. <strong>Every assistant turn gets
+loss; user and system turns get −100.</strong> An off-by-one in masking code trains on
+the wrong half of the conversation — silently, since the loss still decreases.</p>
+
+<h2><span class="n">4</span>The math that matters</h2>
+<p>Masked cross-entropy, with N<sub>resp</sub> = number of response tokens:</p>
+<div class="formula">L = −(1/N<sub>resp</sub>) · Σ<sub>t ∈ response</sub> log p(x<sub>t</sub> | x<sub>&lt;t</sub>)</div>
+<p>Same loss as pretraining, restricted to response tokens. Masking converts "predict the
+joint <em>P(x₁…x<sub>T</sub>)</em>" into behavior cloning: a product over turns of
+<em>P(assistant_turn | conversation so far)</em>.</p>
+<p><strong>Subtlety interviewers love:</strong> the loss averages over <em>response tokens
+only</em>, so wildly varying response lengths change the effective gradient mix per batch.
+Watch <strong>token count, not example count</strong>, when reasoning about effective
+batch size. This is also why packing examples without attention boundaries leaks —
+the model learns spurious cross-example dependencies.</p>
+
+<h2><span class="n">5</span>Training regime</h2>
+<p><strong>1–3 epochs, learning rate ~1–2e−5</strong>, often via LoRA/QLoRA. You are
+nudging settled weights, not rebuilding them. More epochs or a higher LR →
+<strong>catastrophic forgetting</strong>: the narrow SFT distribution overwrites broad
+pretraining knowledge.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — what SFT can and can't do</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/2305.11206">LIMA</a> (Zhou et al., 2023) — the Superficial Alignment Hypothesis: alignment is mostly about eliciting the right format/behavior, which pretraining already contains.</li>
+<li><a href="https://arxiv.org/abs/2305.15717">The False Promise of Imitating Proprietary LLMs</a> — imitation data improves style metrics while leaving capability gaps; a cautionary tale for scraped SFT datasets.</li>
+</ul>
+</div>
+<h2><span class="n">6</span>The 8 gotchas — know the <em>why</em></h2>
+
+<div class="gotcha"><strong>1. Chat-template mismatch.</strong> The model learned one exact token format. Serve another and quality degrades with no error — silent, and it wastes weeks.</div>
+<div class="gotcha"><strong>2. Forgetting prompt loss masking.</strong> You train <em>P(user tokens)</em> too — the model roleplays the human instead of answering.</div>
+<div class="gotcha"><strong>3. Masking the wrong turns in multi-turn.</strong> Off-by-one trains on the wrong half of the conversation, silently.</div>
+<div class="gotcha"><strong>4. Too many epochs / too high LR.</strong> Catastrophic forgetting: the narrow SFT distribution overwrites pretraining knowledge.</div>
+<div class="gotcha"><strong>5. Junk data at scale.</strong> SFT teaches behavior — 500k scraped pairs teach confident wrongness and style quirks.</div>
+<div class="gotcha"><strong>6. Benchmark contamination.</strong> Eval questions in training data → inflated scores, false confidence, wasted iteration.</div>
+<div class="gotcha"><strong>7. Packing without attention boundaries.</strong> Examples attend across boundaries; the model learns spurious cross-example dependencies.</div>
+<div class="gotcha"><strong>8. Style / sycophancy overfitting.</strong> SFT rewards the <em>shape</em> of good answers (annotators preferred thorough, agreeable responses) → verbosity and sycophancy. This is exactly what the RL stage exists to fix.</div>
+
+<h2><span class="n">7</span>Connection to RLHF — the Staff-level link</h2>
+<p>The SFT model becomes <strong>π<sub>ref</sub></strong> in PPO. The KL penalty
+<em>β·KL(π ‖ π<sub>ref</sub>)</em> anchors the RL policy to <em>this</em> model. A
+sloppy SFT — contaminated, style-overfit, template-broken — poisons everything
+downstream. <strong>SFT quality is RLHF quality.</strong></p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 200" role="img" aria-label="Alignment pipeline from pretraining to RLHF">
+  <g font-size="15" font-weight="bold">
+    <rect x="10" y="70" width="150" height="60" rx="10" fill="#efe7d4" stroke="#c9bfa8"/><text x="85" y="105" text-anchor="middle" fill="#2b2620">Pretraining</text>
+    <rect x="210" y="70" width="150" height="60" rx="10" fill="#f3ddc8" stroke="#c05621"/><text x="285" y="105" text-anchor="middle" fill="#2b2620">SFT</text>
+    <rect x="410" y="70" width="150" height="60" rx="10" fill="#e6f2e8" stroke="#1f6f6b"/><text x="485" y="105" text-anchor="middle" fill="#2b2620">PPO / RLHF</text>
+    <rect x="610" y="70" width="140" height="60" rx="10" fill="#fffdf7" stroke="#e2d7c2"/><text x="680" y="105" text-anchor="middle" fill="#2b2620">Deployed π</text>
+  </g>
+  <g stroke="#6f655a" stroke-width="2.5" fill="none">
+    <line x1="160" y1="100" x2="205" y2="100"/><polygon points="210,100 200,94 200,106" fill="#6f655a" stroke="none"/>
+    <line x1="360" y1="100" x2="405" y2="100"/><polygon points="410,100 400,94 400,106" fill="#6f655a" stroke="none"/>
+    <line x1="560" y1="100" x2="605" y2="100"/><polygon points="610,100 600,94 600,106" fill="#6f655a" stroke="none"/>
+  </g>
+  <text x="285" y="155" text-anchor="middle" font-size="14" font-style="italic" fill="#c05621">this model becomes π_ref</text>
+  <path d="M 480 70 C 480 30, 290 30, 287 66" stroke="#c05621" stroke-width="2.5" fill="none" stroke-dasharray="7 5"/>
+  <polygon points="287,70 281,60 293,60" fill="#c05621"/>
+  <text x="385" y="28" text-anchor="middle" font-size="14" font-style="italic" fill="#c05621">KL anchor: β·KL(π ‖ π_ref)</text>
+  <text x="85" y="155" text-anchor="middle" font-size="13" font-style="italic" fill="#6f655a">knowledge</text>
+  <text x="485" y="155" text-anchor="middle" font-size="13" font-style="italic" fill="#6f655a">fixes verbosity (gotcha #8)</text>
+</svg>
+<div class="cap">Figure 4 — The alignment pipeline. SFT's output is RLHF's anchor: sloppy SFT poisons everything downstream.</div>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the RLHF papers</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/1909.08593">Fine-Tuning Language Models from Human Preferences</a> (Ziegler et al., 2019) — the original RLHF recipe: SFT → reward model → PPO.</li>
+<li><a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization Algorithms</a> (Schulman et al., 2017) — PPO, the RL workhorse with the KL constraint.</li>
+<li><a href="https://arxiv.org/abs/2305.18290">Direct Preference Optimization</a> (Rafailov et al., 2023) — the RL-free alternative; still starts from the SFT policy as π_ref.</li>
+</ul>
+</div>
+
+<h2><span class="n">8</span>Self-test</h2>
+<p>Cover the answers. Say each one aloud until it's clean.</p>
+
+<details><summary>1. Base model writes more questions instead of a haiku. Why?</summary>
+<p>It models <em>P(next text)</em>, not <em>P(helpful response)</em>. On the internet, Q/A lists continuing with more questions are plausible continuations. No notion of instruction-following.</p></details>
+
+<details><summary>2. What does −100 do inside the loss, mechanically?</summary>
+<p>It's <code>ignore_index</code> in <code>CrossEntropyLoss</code>: those positions contribute zero loss and zero gradient.</p></details>
+
+<details><summary>3. Multi-turn: which tokens get loss? What breaks with an off-by-one?</summary>
+<p>All assistant turns get loss; user/system turns are −100. An off-by-one trains on the wrong half of the conversation — silently, since loss still decreases.</p></details>
+
+<details><summary>4. Template A at train, template B at serve. Failure mode? Why "silent"?</summary>
+<p>The model only knows the exact token format it trained on. No error, no crash — just degraded answers. Weeks wasted on a string mismatch.</p></details>
+
+<details><summary>5. Teammate says "add 500k more SFT examples to be safe." Your call?</summary>
+<p>Push back. SFT teaches behavior/format, not knowledge — quality dominates quantity (LIMA). 500k scraped examples risk contamination and style overfitting. 1–3 epochs, small LR.</p></details>
+
+<details><summary>6. SFT'd support model now refuses benign questions and answers 3× longer. Diagnose?</summary>
+<p><strong>Two failure modes.</strong> Over-refusal: refusal-heavy data mix taught "refuse when uncertain" — verify with a held-out over-refusal benchmark, compare refusal rates pre/post SFT. Verbosity: style overfitting (gotcha #8) — verify via length-distribution shift and length-controlled evals. Fix: rebalance with compliant near-boundary examples, length-diverse data, cap epochs/LR, length-penalized RLHF next.</p></details>
+
+<details><summary>7. Why does the SFT model become π_ref, and why does that make SFT quality downstream-critical?</summary>
+<p>The KL penalty <em>β·KL(π ‖ π_ref)</em> anchors the RL policy to the SFT model. Sloppy SFT poisons RLHF.</p></details>
+
+<details><summary>8. Response lengths vary 10× in your SFT batch. What breaks, and what do you monitor instead?</summary>
+<p>Loss averages over response tokens only, so the effective gradient mix skews toward long responses. Monitor <strong>token count</strong>, not example count, for effective batch size.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"SFT converts a next-token predictor into an instruction follower by fine-tuning on
+instruction–response pairs with loss computed only on the response tokens. The LIMA
+result — a thousand curated examples aligning a 65B model — shows SFT teaches format
+and behavior, not new knowledge."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · September 2026<br>
+  Builds on: pretraining / next-token prediction · Connects to: SFT data curation → RLHF pipeline
+</footer>
+
+</div>
+</body>
+</html>
