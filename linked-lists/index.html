@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linked Lists: Pointer Surgery — Study Guide | The Infra Notebook</title>
+<meta name="description" content="Linked lists from intuition to mechanism to the math that matters: the inverted contiguity bargain, in-place reversal, the dummy-node trick, and merge-two-sorted — with gotchas, self-tests, and primary references.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  pre .cm{color:#9a8f7d} pre .hl{color:#f6b26b}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Algorithms L3</div>
+<h1>Linked Lists: Pointer Surgery</h1>
+<div class="dateline">September 30, 2026 · Interview-prep series</div>
+<p class="lede">Arrays were a parking row — cheap to find, expensive to rearrange. A linked
+list is a train: nodes scattered through memory, joined by pointers, with the head
+pointer as your only way in. This guide flips L1's contiguity bargain, derives the
+flipped cost table, and drills the three interview mechanics: in-place reversal,
+the dummy-node trick, and merge-two-sorted.</p>
+
+<figure class="hero">
+  <img src="assets/hero-linked-lists.webp" alt="Illustration of paper lanterns strung on a winding cord, a hand unhooking one lantern's cord to splice it into a new spot">
+  <figcaption>A train of nodes: unhook one coupling and the whole route changes — no shifting, no copies.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Builds on L1: the bargain, inverted</h2>
+<p>L1's contiguity bargain: an array keeps everything in one block, so indexing is
+address arithmetic (<code>base + i × w</code>) → Θ(1), and changing the middle
+shifts everything after it → Θ(n). A linked list inverts <strong>both</strong>
+halves of that bargain. Nodes live wherever memory had room, so no formula can
+relate positions — reaching node k is k pointer hops, Θ(n). But splicing at a node
+you already hold is two pointer writes, Θ(1), with nothing to shift. Everything
+below is a consequence of this inversion.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 330" role="img" aria-label="Array contiguous memory versus scattered linked-list nodes">
+  <text x="20" y="28" font-size="15" font-weight="bold" fill="#2b2620">Array — one contiguous block</text>
+  <g font-size="12" font-family="ui-monospace,Menlo,monospace">
+    <rect x="20" y="44" width="64" height="44" rx="6" fill="#f3ddc8" stroke="#c05621"/><text x="52" y="71" text-anchor="middle" fill="#2b2620">7</text>
+    <rect x="88" y="44" width="64" height="44" rx="6" fill="#f3ddc8" stroke="#c05621"/><text x="120" y="71" text-anchor="middle" fill="#2b2620">3</text>
+    <rect x="156" y="44" width="64" height="44" rx="6" fill="#f3ddc8" stroke="#c05621"/><text x="188" y="71" text-anchor="middle" fill="#2b2620">9</text>
+    <rect x="224" y="44" width="64" height="44" rx="6" fill="#f3ddc8" stroke="#c05621"/><text x="256" y="71" text-anchor="middle" fill="#2b2620">2</text>
+    <rect x="292" y="44" width="64" height="44" rx="6" fill="#f3ddc8" stroke="#c05621"/><text x="324" y="71" text-anchor="middle" fill="#2b2620">5</text>
+  </g>
+  <text x="20" y="112" font-size="12" font-style="italic" fill="#6f655a">addresses: 0x1000, 0x1008, 0x1010 … — slot k is base + k×w</text>
+  <text x="20" y="132" font-size="12" font-style="italic" fill="#6f655a">insert at slot 1: shift slots 1..4 right → Θ(n)</text>
+
+  <text x="400" y="28" font-size="15" font-weight="bold" fill="#2b2620">Linked list — scattered, coupled</text>
+  <g font-size="12" font-family="ui-monospace,Menlo,monospace">
+    <rect x="400" y="44" width="100" height="44" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="450" y="71" text-anchor="middle" fill="#2b2620">7 →</text>
+    <rect x="540" y="120" width="100" height="44" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="590" y="147" text-anchor="middle" fill="#2b2620">3 →</text>
+    <rect x="430" y="200" width="100" height="44" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="480" y="227" text-anchor="middle" fill="#2b2620">9 →</text>
+    <rect x="600" y="240" width="100" height="44" rx="6" fill="#e6f2e8" stroke="#1f6f6b"/><text x="650" y="267" text-anchor="middle" fill="#2b2620">2 → ∅</text>
+  </g>
+  <g stroke="#1f6f6b" stroke-width="2" fill="none">
+    <path d="M 500 66 Q 545 66 560 100"/><polygon points="562,108 554,96 568,94" fill="#1f6f6b" stroke="none"/>
+    <path d="M 640 142 Q 560 180 532 208"/><polygon points="530,216 524,204 538,202" fill="#1f6f6b" stroke="none"/>
+    <path d="M 530 222 Q 590 236 606 244"/><polygon points="614,246 600,240 602,254" fill="#1f6f6b" stroke="none"/>
+  </g>
+  <text x="400" y="112" font-size="12" font-style="italic" fill="#6f655a">addresses: wherever — the → arrow IS the address</text>
+  <text x="400" y="132" font-size="12" font-style="italic" fill="#6f655a">no arithmetic reaches node k; you walk → Θ(n)</text>
+  <text x="400" y="312" font-size="13" font-weight="bold" fill="#c05621">the inversion: arrays index cheaply and splice expensively; lists splice cheaply and index expensively</text>
+</svg>
+<div class="cap">Figure 1 — The contiguity bargain, inverted. Contiguity buys arithmetic (random access) and charges shifting. Scatter buys cheap rewiring and charges the walk.</div>
+</div>
+
+<p><strong>One-line version:</strong> a linked list trades the array's address
+arithmetic for pointer surgery — you lose Θ(1) indexing and gain Θ(1) splicing at
+a node you hold. The dummy node is the surgical assistant: it parks an empty car
+in front of the train so the head never needs a special case, and the answer is
+always <code>dummy.next</code>.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — canonical references</h4>
+<ul>
+<li><em>CLRS</em>, Chapter 10, §10.2 (Linked lists) — the textbook treatment: sentinel nodes, insert/delete, and the exact cost of every operation.</li>
+<li><a href="https://en.wikipedia.org/wiki/Linked_list">Wikipedia: Linked list</a> — best for: the complete taxonomy (singly, doubly, circular, XOR lists) and the honest complexity table for each variant.</li>
+<li><a href="https://docs.python.org/3/library/collections.html">Python docs: collections.deque</a> — the stdlib's only linked structure: a doubly-linked list of blocks. Read its Θ(1) append/appendleft guarantees and ask yourself why it's <em>not</em> a full linked list API.</li>
+<li><a href="https://wiki.python.org/moin/TimeComplexity">Python TimeComplexity wiki</a> — verified per-operation costs for lists and deques; the numbers behind the array column of the cost table.</li>
+</ul>
+</div>
+
+<h2><span class="n">2</span>The math: three derivations</h2>
+<p><strong>Derivation 1 — indexing.</strong> Array: <code>address = base + k × w</code>,
+one multiplication and one memory access → Θ(1). Linked list: each hop
+<em>dereferences</em> a pointer to discover the next address — inherently
+sequential, unskippable, because nothing tells you where node k+1 lives until you
+read node k. Reaching node k costs k hops → Θ(n) worst case. No contiguity, no
+arithmetic.</p>
+
+<p><strong>Derivation 2 — splice at a known node.</strong> Deleting node X from the
+train: its predecessor P does <code>P.next = X.next</code> — two pointer writes,
+Θ(1); the rest of the train never moves. The array equivalent shifts n−k−1
+elements — Θ(n) data movement. The linked list pays Θ(1) exactly where the array
+paid Θ(n); it bought that with Θ(n) indexing.</p>
+
+<div class="formula">splice at held node: Θ(1) rewiring vs Θ(n) shifting — the train's entire raison d'être</div>
+
+<p><strong>Derivation 3 — in-place reversal.</strong> Iterative: three pointers
+(<code>prev</code>, <code>curr</code>, <code>nxt</code>), each step visits one
+node and does constant work → Θ(n) time, three pointers → O(1) extra space.
+Recursive: identical visits, but every call holds a stack frame until the
+recursion unwinds → Θ(n) extra space, and Python's default recursion limit (1000)
+crashes on longer lists. Same big-O time, different memory story — and the
+memory story is the interview question.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="Splicing out node X: save before you sever">
+  <text x="20" y="28" font-size="15" font-weight="bold" fill="#2b2620">Delete X: before</text>
+  <g font-size="14" font-weight="bold" font-family="ui-monospace,Menlo,monospace">
+    <rect x="60" y="60" width="90" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="105" y="92" text-anchor="middle" fill="#2b2620">P</text>
+    <rect x="240" y="60" width="90" height="52" rx="8" fill="#f3ddc8" stroke="#c05621"/><text x="285" y="92" text-anchor="middle" fill="#2b2620">X</text>
+    <rect x="420" y="60" width="90" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="465" y="92" text-anchor="middle" fill="#2b2620">Q</text>
+  </g>
+  <g stroke="#c05621" stroke-width="2.5" fill="none">
+    <line x1="150" y1="86" x2="228" y2="86"/><polygon points="236,86 224,80 224,92" fill="#c05621" stroke="none"/>
+    <line x1="330" y1="86" x2="408" y2="86"/><polygon points="416,86 404,80 404,92" fill="#c05621" stroke="none"/>
+  </g>
+  <text x="20" y="150" font-size="15" font-weight="bold" fill="#2b2620">Delete X: after — one pointer write</text>
+  <g font-size="14" font-weight="bold" font-family="ui-monospace,Menlo,monospace">
+    <rect x="60" y="168" width="90" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="105" y="200" text-anchor="middle" fill="#2b2620">P</text>
+    <rect x="240" y="168" width="90" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="285" y="200" text-anchor="middle" fill="#2b2620">Q</text>
+    <rect x="420" y="168" width="90" height="52" rx="8" fill="#f3ddc8" stroke="#c05621" stroke-dasharray="6 4" opacity="0.55"/><text x="465" y="200" text-anchor="middle" fill="#2b2620">X</text>
+  </g>
+  <g stroke="#1f6f6b" stroke-width="2.5" fill="none">
+    <path d="M 150 194 Q 195 160 232 176"/><polygon points="240,180 228,174 230,188" fill="#1f6f6b" stroke="none"/>
+  </g>
+  <text x="60" y="252" font-size="13" fill="#1f6f6b">P.next = X.next — X drops out, the train never moves</text>
+  <text x="60" y="276" font-size="13" fill="#c05621">⚠ the bug that orphans the tail: overwriting a pointer you haven't stashed yet — always save nxt before curr.next = prev</text>
+</svg>
+<div class="cap">Figure 2 — Splicing is one pointer write. The ordering warning at the bottom is the #1 linked-list bug: save before you sever, or the rest of the train is gone.</div>
+</div>
+
+<div class="deepdive">
+<h4>🎥 Deep dive — stellar explainers</h4>
+<ul>
+<li><a href="https://neetcode.io/roadmap">NeetCode roadmap</a> — best for: the Linked List section's ordered problem ladder (LC 206 → 21 → 141 → 19 → 143), each with a pattern-first video walkthrough. His "Reverse Linked List" video is the cleanest three-pointer demo on the internet.</li>
+<li><a href="https://www.youtube.com/watch?v=-Yn5DU0_-lw">WilliamFiset — Linked List</a> — best for: building singly and doubly linked lists from first principles on a whiteboard, deriving the cost of every operation. Watch before you write a single line of list code.</li>
+</ul>
+</div>
+
+<h2><span class="n">3</span>The code: the three-pointer dance</h2>
+<p><strong>Problem 1 — Reverse Linked List (LC 206).</strong> The three lines must run
+in exactly this order — the comments say why:</p>
+<pre>class ListNode:
+    def __init__(self, val=0, next=None):
+        self.val = val
+        self.next = next
+
+def reverse_list(head):
+    <span class="cm"># prev trails curr; nxt stashes the future. Each node visited
+    # once -> Theta(n) time; three pointers -> O(1) extra space.
+    # The invariant after each step: prev heads the reversed
+    # prefix, curr heads the unreversed suffix.</span>
+    prev, curr = None, head
+    while curr:
+        nxt = curr.next   <span class="cm"># 1. stash the coupling ahead — FIRST</span>
+        curr.next = prev  <span class="cm"># 2. rewire: this car now points backward</span>
+        prev = curr       <span class="cm"># 3. walk both pointers forward</span>
+        curr = nxt
+    return prev  <span class="cm"># the last car is the new engine</span></pre>
+
+<div class="diagram">
+<svg viewBox="0 0 760 260" role="img" aria-label="One step of the three-pointer reversal">
+  <text x="20" y="28" font-size="15" font-weight="bold" fill="#2b2620">Reversal, one step: curr points at car 2</text>
+  <g font-size="14" font-weight="bold" font-family="ui-monospace,Menlo,monospace">
+    <rect x="60" y="70" width="90" height="52" rx="8" fill="#e6f2e8" stroke="#1f6f6b"/><text x="105" y="102" text-anchor="middle" fill="#2b2620">1</text>
+    <rect x="260" y="70" width="90" height="52" rx="8" fill="#f3ddc8" stroke="#c05621"/><text x="305" y="102" text-anchor="middle" fill="#2b2620">2</text>
+    <rect x="460" y="70" width="90" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="505" y="102" text-anchor="middle" fill="#2b2620">3</text>
+    <rect x="640" y="70" width="70" height="52" rx="8" fill="#fbf4e4" stroke="#e2d7c2"/><text x="675" y="102" text-anchor="middle" fill="#2b2620">∅</text>
+  </g>
+  <g stroke-width="2.5" fill="none">
+    <path d="M 305 122 Q 200 160 112 124" stroke="#1f6f6b"/><polygon points="106,120 118,118 114,130" fill="#1f6f6b" stroke="none"/>
+    <path d="M 350 96 L 448 96" stroke="#c05621"/><polygon points="456,96 444,90 444,102" fill="#c05621" stroke="none"/>
+    <path d="M 550 96 L 628 96" stroke="#6f655a" stroke-dasharray="5 4"/><polygon points="636,96 624,90 624,102" fill="#6f655a" stroke="none"/>
+  </g>
+  <text x="60" y="160" font-size="13" font-style="italic" fill="#1f6f6b">prev = 1: already reversed, points backward (green arc)</text>
+  <text x="60" y="182" font-size="13" font-style="italic" fill="#c05621">curr = 2: nxt was stashed first, then 2 rewires to point at 1 (orange)</text>
+  <text x="60" y="204" font-size="13" font-style="italic" fill="#6f655a">the dashed coupling is the one nxt remembers — the suffix survives the severing</text>
+  <text x="60" y="238" font-size="13" font-weight="bold" fill="#2b2620">loop until curr is ∅; prev then heads the reversed train</text>
+</svg>
+<div class="cap">Figure 3 — One iteration of the three-pointer dance. The dashed arrow is the stashed future: without it, cars 3+ vanish the instant car 2 rewires.</div>
+</div>
+
+<p><strong>Problem 2 — Merge Two Sorted Lists (LC 21).</strong> The dummy node absorbs
+every head special case; <code>tail</code> always points at the last car of the
+merged train. This is mergesort's merge step (L9) wearing a linked-list costume:</p>
+<pre>def merge_two_lists(l1, l2):
+    <span class="cm"># Theta(n+m) time: each car chosen once. O(1) extra space.
+    # tail.next = l1 or l2 splices the whole survivor — the
+    # remainder is already linked; walking it wastes work.</span>
+    dummy = tail = ListNode()  <span class="cm"># empty engine; answer is dummy.next</span>
+    while l1 and l2:
+        if l1.val &lt;= l2.val:
+            tail.next, l1 = l1, l1.next
+        else:
+            tail.next, l2 = l2, l2.next
+        tail = tail.next
+    tail.next = l1 or l2
+    return dummy.next</pre>
+
+<div class="deepdive">
+<h4>🎯 Deep dive — the four representative problems</h4>
+<ul>
+<li><a href="https://leetcode.com/problems/reverse-linked-list/">Reverse Linked List (206)</a> — the three-pointer dance above; the single most-asked list problem.</li>
+<li><a href="https://leetcode.com/problems/merge-two-sorted-lists/">Merge Two Sorted Lists (21)</a> — dummy + tail; mergesort's merge step in list form. Preview of L30's merge-k.</li>
+<li><a href="https://leetcode.com/problems/remove-nth-node-from-end-of-list/">Remove Nth Node From End of List (19)</a> — dummy + two pointers offset by n: the gap technique that seeds L15's fast/slow thinking.</li>
+<li><a href="https://leetcode.com/problems/linked-list-cycle/">Linked List Cycle (141)</a> — the flagship of L15 (fast &amp; slow pointers). Peek, don't solve — its lesson is coming.</li>
+</ul>
+</div>
+
+<h2><span class="n">4</span>How to spot it: the linked-list tells</h2>
+<ul>
+<li><strong>"Reverse"</strong> → three-pointer dance (206; LC 92 reverses only the cars between m and n — same dance, longer bookkeeping).</li>
+<li><strong>"In O(1) extra space" over a sequence</strong> → they're ruling out a copied array; think pointer surgery, not slicing.</li>
+<li><strong>"Merge two sorted"</strong> → dummy + tail; the merge step of mergesort (L9) in list form.</li>
+<li><strong>"Nth from the end"</strong> or the head might change → park a dummy node; never special-case the first car (LC 19).</li>
+<li><strong>"Given only the node, delete it"</strong> (LC 237) → no predecessor to rewire? Copy the next car's cargo into this one, skip the next car. The train cheat code.</li>
+<li><strong>"Reorder"</strong> (LC 143) → split at the middle, reverse the second half, zip the halves: three moves from this lesson composed. The first multi-pattern list problem — watch it compose.</li>
+</ul>
+
+<h2><span class="n">5</span>The 7 gotchas — know the <em>why</em></h2>
+
+<div class="gotcha"><strong>1. Save before you sever.</strong> <code>curr.next = prev</code> before <code>nxt = curr.next</code> orphans the tail — the #1 linked-list bug, and it corrupts <em>silently</em>: no IndexError to save you. The ordering in Figure 3 is a law, not a suggestion.</div>
+<div class="gotcha"><strong>2. The head is a local variable.</strong> <code>head = head.next</code> inside a helper changes nothing for the caller unless you return the new head. Return <code>dummy.next</code> — that's the dummy's job.</div>
+<div class="gotcha"><strong>3. Loop on <code>curr</code>, not <code>curr.next</code>.</strong> <code>while curr.next</code> skips the last car. Always check the pointer you are about to dereference — the invariant is about <code>curr</code>.</div>
+<div class="gotcha"><strong>4. Miswired pointers make cycles.</strong> Traversal then loops forever — if a test <em>hangs</em>, you built a cycle, not an infinite loop in your logic. (L15 teaches Floyd's detection; the fix is surgical ordering.)</div>
+<div class="gotcha"><strong>5. Recursion is seductive and fatal.</strong> Recursive reversal is elegant Θ(n)-stack; Python caps at 1000 frames. Iterative for real lists — say this out loud before the interviewer asks.</div>
+<div class="gotcha"><strong>6. <code>l1 or l2</code> splices the whole survivor.</strong> The remainder is already linked — walking it node by node is wasted work and signals you don't trust the structure.</div>
+<div class="gotcha"><strong>7. The dummy's value is garbage.</strong> Build every answer from <code>dummy.next</code>; never include <code>dummy.val</code>. Forgetting this returns an extra phantom car.</div>
+
+<h2><span class="n">6</span>Connects to</h2>
+<p><strong>L15 (Fast &amp; slow pointers)</strong> — Floyd's cycle detection runs on the
+trains you can now build. <strong>L23 (LRU cache)</strong> — a doubly-linked list
+plus a hash map; today's Θ(1) splice is the entire reason that design works.
+<strong>L30 (Merge k sorted lists)</strong> — today's merge, generalized with a heap
+from L28. <strong>L8 (Recursion)</strong> — reread reversal recursively once, to
+<em>feel</em> the Θ(n) stack. <strong>L5 (Hash maps)</strong> — paired with lists in
+LRU: O(1) lookup plus O(1) splice is the combo.</p>
+
+<h2><span class="n">7</span>Self-test</h2>
+<p>Cover the answers. Say each one aloud until it's clean.</p>
+
+<details><summary>1. From scratch: why is linked-list indexing Θ(n)?</summary>
+<p>There's no contiguity, so no address arithmetic — the address of node k+1 is only discoverable by dereferencing node k's pointer. You must walk k couplings sequentially: k hops → Θ(n) worst case.</p></details>
+
+<details><summary>2. Insertion at a node you hold is Θ(1) for lists, Θ(n) for arrays. Derive both.</summary>
+<p>List: <code>P.next = X</code> plus <code>X.next = P.next_old</code> — two pointer writes, Θ(1); the rest of the train doesn't move. Array: insert at k shifts n−k−1 elements one slot right — Θ(n) data movement. (Finding the position costs Θ(n) for <em>both</em>; the splice itself is what differs.)</p></details>
+
+<details><summary>3. In reversal, what exactly breaks if you rewire before stashing?</summary>
+<p><code>curr.next = prev</code> overwrites the only reference to the unreversed suffix. The nodes after curr become unreachable — garbage-collected and gone, silently. You must hold <code>nxt = curr.next</code> first.</p></details>
+
+<details><summary>4. What does the dummy node buy you? State its one-line contract.</summary>
+<p>It kills the head special case: park an empty engine in front, do all surgery relative to it, return <code>dummy.next</code>. Contract: the answer is always <code>dummy.next</code>, whatever happened at the front.</p></details>
+
+<details><summary>5. Iterative reversal is O(1) space; recursive is Θ(n). Why the difference?</summary>
+<p>Both visit each node once (Θ(n) time). The iterative version holds three pointers. The recursive version keeps one stack frame per call alive until the recursion bottoms out and unwinds — n frames → Θ(n) extra space, plus Python's 1000-frame limit.</p></details>
+
+<details><summary>6. When would you still choose a Python list over a linked list, even with heavy insertion?</summary>
+<p>When random access dominates, or when cache locality matters: arrays store data contiguously (cache-friendly); linked lists chase pointers across the heap (cache-hostile). Insertion is Θ(n) for the array but each "shift" is a fast memmove — big-O isn't the whole story.</p></details>
+
+<details><summary>7. Spot the bug: <code>nxt = curr.next</code> moved <em>after</em> the rewire — <code>curr.next = prev; nxt = curr.next; prev, curr = curr, nxt</code>. What happens?</summary>
+<p>The stash captures the wrong future: after the sever, <code>curr.next</code> is <code>prev</code>, so <code>nxt = prev</code>, then <code>curr = nxt = prev = curr</code> — curr stalls forever and the rest of the train is already gone. This is gotcha #1 in code form: the stash must happen <em>before</em> the sever, or you memorize the past instead of the future.</p></details>
+
+<details><summary>8. How does the LRU cache (L23) use today's lesson? Name the two roles.</summary>
+<p>A doubly-linked list holds entries in recency order; a hash map holds key → node. Touch: hash-map lookup (O(1)), then splice the node to the front (Θ(1) pointer rewiring — today's move). Evict: drop the tail. Both halves of the inversion show up in one design.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"A linked list is a train: nodes scattered in memory, each holding data and one
+pointer to the next, with the head pointer as the only way in. Indexing is Θ(n)
+because there's no address arithmetic — you walk k couplings to reach the k-th
+car. But splicing at a node you hold is Θ(1): two pointer writes with nothing to
+shift, where an array pays Θ(n) shifting the tail. The interview mechanics are
+three moves: in-place reversal with prev, curr, nxt — always stash next before
+you rewire — Θ(n) time, O(1) space; the dummy-node trick so the head never needs
+a special case; and merge-two-sorted with a tail pointer, which is mergesort's
+merge step. Choose the train when the workload is mostly splicing, not random
+access."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · September 2026<br>
+  Builds on: L1 Arrays (the contiguity bargain, inverted) · Connects to: L15 fast &amp; slow pointers, L23 LRU cache, L30 merge k, L8 recursion, L5 hash maps
+</footer>
+
+</div>
+</body>
+</html>
