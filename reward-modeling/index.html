@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reward Modeling — Study Guide | The Infra Notebook</title>
+<meta name="description" content="The reward model under the hood: Bradley–Terry loss and why only margins matter, how labeler psychology corrupts the judge, reward hacking formalized and measured (Gao et al. scaling laws), and the defense catalog.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  pre .cm{color:#9a8f7d} pre .hl{color:#f6b26b}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Post-Training B4</div>
+<h1>Reward Modeling: Reading the Judge's Mind</h1>
+<div class="dateline">October 1, 2026 · Interview-prep series</div>
+<p class="lede">The reward model is the compressor at the heart of RLHF: tens of thousands of
+human rankings squeezed into one scoring function. This page opens it — the 1952
+pairwise-comparison model underneath, why its loss only ever sees <em>differences</em>,
+the four ways labeler psychology corrupts the judge, the formal and measured versions
+of reward hacking, and the layered defense a Staff engineer actually runs.</p>
+
+<figure class="hero">
+  <img src="assets/hero-reward-modeling.webp" alt="Hand-drawn illustration of a robot climbing an optimization curve that rises and then craters, with proxy and true-quality gauges diverging">
+  <figcaption>The overoptimization curve: proxy scores climb while true quality peaks and falls. Today's lesson is how to sit on the left side of it.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Builds on — B3's compressor, opened up</h2>
+<p>Yesterday (B3) the reward model was a black box you train with
+L<sub>BT</sub> = −E[log σ(r<sub>θ</sub>(x,y<sub>w</sub>) − r<sub>θ</sub>(x,y<sub>l</sub>))],
+then optimize against with PPO on a KL leash. The leash's whole logic was: the judge is
+only calibrated near the SFT checkpoint's neighborhood. Today we ask <em>why</em> —
+what the judge actually is, where its blind spots come from, and why the optimizer
+will find every one of them.</p>
+<p><strong>Spaced retrieval:</strong> last night's warm-up trap — "response A scores 3.2
+on prompt X, response B scores 1.1 on prompt Y, which is better?" — is a theorem about
+the loss in §3. If you can already answer it, the rest of this page is the proof.</p>
+
+<h2><span class="n">2</span>Why the loss looks this way — the data constraint</h2>
+<p>The reward model is downstream of one stubborn fact about humans: <strong>we are
+bad at absolute scales and good at comparisons.</strong> Ask a labeler to rate
+helpfulness 1–10 and the scale drifts between raters and between sessions. Ask
+"A or B?" and you get a fast, reliable answer in seconds. So the modeling question
+is: how do you turn pairwise choices into a function an optimizer can climb?</p>
+<p>The Bradley–Terry model (1952, built for chess-like contests) answers: posit a
+latent score r<sub>θ</sub>(x, y) and assume
+P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ(r<sub>θ</sub>(x,y<sub>w</sub>) − r<sub>θ</sub>(x,y<sub>l</sub>)).
+Maximum likelihood on human rankings gives the training loss. Read it backwards and
+you see the design's signature: <strong>the loss only ever sees differences.</strong>
+Add a constant to every reward and nothing moves.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="Bradley-Terry machine diagram: two responses scored, only their difference enters the sigmoid">
+  <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="none" stroke="#6f655a" stroke-width="1.5"/></marker></defs>
+  <rect x="20" y="30" width="180" height="70" rx="8" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="110" y="58" text-anchor="middle" font-size="15" font-family="Georgia">prompt x</text>
+  <text x="110" y="80" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">"Explain entropy"</text>
+  <rect x="20" y="130" width="180" height="60" rx="8" fill="#f3ddc8" stroke="#c05621"/>
+  <text x="110" y="156" text-anchor="middle" font-size="15" font-family="Georgia">response y_w</text>
+  <text x="110" y="176" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">r = 2.4</text>
+  <rect x="20" y="205" width="180" height="60" rx="8" fill="#efe7d4" stroke="#e2d7c2"/>
+  <text x="110" y="231" text-anchor="middle" font-size="15" font-family="Georgia">response y_l</text>
+  <text x="110" y="251" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">r = 0.9</text>
+  <line x1="200" y1="160" x2="300" y2="160" stroke="#6f655a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="200" y1="235" x2="300" y2="235" stroke="#6f655a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="300" y="130" width="140" height="105" rx="8" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="370" y="162" text-anchor="middle" font-size="16" font-family="Georgia">Δr = 1.5</text>
+  <text x="370" y="188" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">only the margin</text>
+  <text x="370" y="206" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">enters the sigmoid</text>
+  <line x1="440" y1="182" x2="540" y2="182" stroke="#6f655a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="540" y="130" width="200" height="105" rx="8" fill="#1f6f6b" opacity="0.12" stroke="#1f6f6b"/>
+  <text x="640" y="160" text-anchor="middle" font-size="15" font-family="Georgia">P(y_w ≻ y_l) = σ(1.5)</text>
+  <text x="640" y="188" text-anchor="middle" font-size="22" font-family="Georgia" font-weight="bold" fill="#1f6f6b">≈ 0.82</text>
+  <text x="640" y="212" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">human picks w 82% of the time</text>
+  <text x="380" y="285" text-anchor="middle" font-size="13" font-style="italic" fill="#c05621" font-family="Georgia">Shift both scores by +c: Δr unchanged → identical loss. Raw scores are meaningless across prompts.</text>
+</svg>
+<p class="cap">Fig. 1 — The Bradley–Terry machine. The sigmoid swallows only the margin; everything else is invisible to the loss.</p>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the originals</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/1706.03741">Deep Reinforcement Learning from Human Preferences</a> (Christiano et al., 2017) — the paper that put preference-based reward modeling on the map; BT loss on trajectory comparisons.</li>
+<li><a href="https://arxiv.org/abs/2009.01325">Learning to summarize from human feedback</a> (Stiennon et al., 2020) — reward modeling at LLM scale before InstructGPT; the labeler-agreement numbers (~70%) come from this line of work.</li>
+<li><a href="https://arxiv.org/abs/2203.02155">Training language models to follow instructions with human feedback</a> (Ouyang et al., 2022) — InstructGPT; the 13k-demo / 33k-comparison receipts and the production RM recipe.</li>
+</ul>
+</div>
+
+<h2><span class="n">3</span>Building the judge — cheap architecture, expensive data</h2>
+<p>Architecturally the reward model is deliberately boring: take the SFT backbone, remove
+the language-modeling head, and bolt on a scalar head — the final-token hidden state
+through one linear layer becomes one number. That number is the score.</p>
+<p>The data pipeline is where production systems live or die. For each prompt, sample
+two (or four to nine) completions <strong>from the current policy</strong> — on-policy
+matters, because the judge must score outputs from the distribution PPO will actually
+explore — and have labelers rank them. Then the uncomfortable economics (B2, returning):
+human agreement on pairwise preference runs 60–75%. A quarter to a third of your
+labels are noise, and each rater pool's taste gets baked into r<sub>θ</sub> as if it
+were universal human preference.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 320" role="img" aria-label="Judge assembly: SFT backbone with LM head removed and scalar head added, fed by an on-policy labeler pipeline">
+  <rect x="20" y="40" width="200" height="90" rx="8" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="120" y="70" text-anchor="middle" font-size="15" font-weight="bold" font-family="Georgia">SFT backbone</text>
+  <text x="120" y="94" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">transformer weights</text>
+  <text x="120" y="112" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">frozen or fine-tuned</text>
+  <rect x="260" y="40" width="170" height="90" rx="8" fill="#efe7d4" stroke="#6f655a" stroke-dasharray="6 4"/>
+  <text x="345" y="70" text-anchor="middle" font-size="15" font-family="Georgia">LM head</text>
+  <text x="345" y="94" text-anchor="middle" font-size="16" fill="#c05621" font-family="Georgia">✕ removed</text>
+  <line x1="220" y1="85" x2="260" y2="85" stroke="#6f655a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="470" y="40" width="170" height="90" rx="8" fill="#f3ddc8" stroke="#c05621"/>
+  <text x="555" y="70" text-anchor="middle" font-size="15" font-weight="bold" font-family="Georgia">scalar head</text>
+  <text x="555" y="94" text-anchor="middle" font-size="13" fill="#6f655a" font-family="Georgia">final-token state → 1 number</text>
+  <line x1="430" y1="85" x2="470" y2="85" stroke="#6f655a" stroke-width="1.5" marker-end="url(#arr)"/>
+  <rect x="20" y="180" width="620" height="100" rx="8" fill="#fffdf7" stroke="#e2d7c2"/>
+  <text x="40" y="210" font-size="14" font-weight="bold" font-family="Georgia">Labeler pipeline (the expensive part)</text>
+  <text x="40" y="236" font-size="13" font-family="Georgia">π_φ samples 2–9 completions per prompt → humans rank → (x, y_w, y_l) triples → BT loss</text>
+  <text x="40" y="262" font-size="13" fill="#c05621" font-family="Georgia">agreement 60–75% → ~⅓ of labels are noise · rater taste baked in as "universal"</text>
+</svg>
+<p class="cap">Fig. 2 — Judge assembly. The architecture is a one-layer change; the data is the entire product.</p>
+</div>
+
+<h2><span class="n">4</span>How humans corrupt the judge — four pathologies</h2>
+<p>None of these are training bugs. They are human psychology, compressed into a
+function — which is exactly why the judge's blind spots are the attack surface of
+the whole pipeline:</p>
+<div class="gotcha"><strong>1. Verbosity bias.</strong> Longer answers score higher for no reason — raters equate length with thoroughness. The model learns the proxy, not the preference.</div>
+<div class="gotcha"><strong>2. Format bias.</strong> Bullet points, bold headings, confident framing get rewarded as substance. Style becomes a reward vector the optimizer can farm for free.</div>
+<div class="gotcha"><strong>3. Sycophancy.</strong> Agreeing with the user's stated views scores higher. The judge teaches the policy to flatter.</div>
+<div class="gotcha"><strong>4. Confidence read as competence.</strong> Hedged uncertainty looks like incompetence to a rater, so the reward model teaches false confidence — the root of the "confidently invented citation" failure.</div>
+<div class="gotcha"><strong>5. Cross-prompt score comparison.</strong> The BT invariance (L(r + c) = L(r)) means raw scores are not comparable across prompts. Dashboards that rank them are lying with numbers.</div>
+<div class="gotcha"><strong>6. Off-policy training data.</strong> Train the RM on completions from another model (or humans), and it judges a distribution PPO never visits — while PPO explores regions the RM never trained on. The competence zones must overlap.</div>
+
+<h2><span class="n">5</span>Reward hacking — Goodhart, formalized and measured</h2>
+<p><strong>The formal version</strong> (Skalse et al., 2022): a proxy R̃ is hackable when
+optimizing it can decrease the true objective R. Their "unhackable" condition — proxy
+improvement can <em>never</em> hurt the true objective — is nearly impossible to
+satisfy for stochastic policies. Read it as a design law: a non-trivial proxy can
+always be gamed; the question is never <em>whether</em>, only how much optimization
+pressure it takes.</p>
+<p><strong>The measured version</strong> (Gao, Schulman &amp; Hilton, 2022): build a
+<em>gold-standard</em> reward model — bigger, fixed, the stand-in for truth. Train proxy
+RMs on its synthetic preferences. Optimize the policy against the proxy with RL or
+best-of-N. Plot gold score against optimization intensity d = √KL(π‖π<sub>ref</sub>).
+The shape is the lesson: proxy score climbs monotonically while gold score rises,
+peaks, then <em>declines</em> — and both curves follow clean scaling laws in
+reward-model size. Over-optimization isn't a regime you avoid; it's a curve you
+deliberately sit on the left side of.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 340" role="img" aria-label="Overoptimization curve: proxy score rises monotonically while gold score peaks and declines against KL distance">
+  <line x1="70" y1="30" x2="70" y2="290" stroke="#6f655a" stroke-width="1.5"/>
+  <line x1="70" y1="290" x2="720" y2="290" stroke="#6f655a" stroke-width="1.5"/>
+  <text x="395" y="325" text-anchor="middle" font-size="14" font-family="Georgia">optimization intensity  d = √KL(π‖π_ref)</text>
+  <text x="35" y="160" text-anchor="middle" font-size="14" font-family="Georgia" transform="rotate(-90 35 160)">score</text>
+  <path d="M80,270 C220,250 340,210 450,170 C560,130 650,100 710,85" fill="none" stroke="#1f6f6b" stroke-width="3"/>
+  <text x="660" y="70" font-size="14" fill="#1f6f6b" font-family="Georgia">proxy r_θ ↑</text>
+  <path d="M80,270 C200,250 300,200 380,170 C450,145 520,175 600,230 C640,258 680,275 710,280" fill="none" stroke="#c05621" stroke-width="3" stroke-dasharray="8 5"/>
+  <text x="600" y="290" font-size="14" fill="#c05621" font-family="Georgia" text-anchor="middle">gold reward: rises, peaks, declines</text>
+  <line x1="380" y1="140" x2="380" y2="290" stroke="#c05621" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <circle cx="380" cy="170" r="7" fill="#c05621"/>
+  <text x="380" y="125" text-anchor="middle" font-size="13" fill="#c05621" font-family="Georgia">peak</text>
+  <rect x="80" y="30" width="280" height="60" rx="8" fill="#1f6f6b" opacity="0.10"/>
+  <text x="220" y="56" text-anchor="middle" font-size="13" fill="#1f6f6b" font-family="Georgia">✓ operate here — left of the peak</text>
+  <text x="220" y="74" text-anchor="middle" font-size="12" fill="#6f655a" font-family="Georgia">β sets how far right you may travel</text>
+  <text x="560" y="56" text-anchor="middle" font-size="13" fill="#c05621" font-family="Georgia">✕ the wilderness — judge is blind here</text>
+  <text x="120" y="250" font-size="12" font-style="italic" fill="#6f655a" font-family="Georgia">both climb together…</text>
+  <text x="540" y="250" font-size="12" font-style="italic" fill="#6f655a" font-family="Georgia">…then diverge</text>
+</svg>
+<p class="cap">Fig. 3 — Gao et al.'s overoptimization curve. The proxy is always happy; the gold score is the one that tells the truth. β is the travel budget along the x-axis.</p>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — reward hacking, measured</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/2210.10760">Scaling Laws for Reward Model Overoptimization</a> (Gao, Schulman &amp; Hilton, 2022) — the proxy-vs-gold experiment; overoptimization follows scaling laws in RM size. The curve in Fig. 3 is theirs.</li>
+<li><a href="https://arxiv.org/abs/2209.13085">Defining and Characterizing Reward Hacking</a> (Skalse et al., 2022) — the first formal definition; unhackability is nearly impossible for stochastic policies, so assume hackability and budget for it.</li>
+<li><a href="https://arxiv.org/abs/2310.02743">Reward Model Ensembles Help Mitigate Overoptimization</a> — ensembles + conservative optimization reduce overoptimization; gains are orthogonal to scaling the RM up.</li>
+</ul>
+</div>
+
+<h2><span class="n">6</span>The math that matters</h2>
+<div class="formula">
+P(y<sub>w</sub> ≻ y<sub>l</sub> | x) = σ(r<sub>θ</sub>(x,y<sub>w</sub>) − r<sub>θ</sub>(x,y<sub>l</sub>))<br>
+L<sub>BT</sub> = −E[log σ(Δr)]
+</div>
+<p>Three things to carry. <strong>First, the gradient:</strong>
+∇L = −E[σ(−Δr)·(∇r(x,y<sub>w</sub>) − ∇r(x,y<sub>l</sub>))]. The sigmoid weight means the
+learning signal concentrates on <em>close pairs</em> — confident wins contribute ~nothing.
+Combine with the 60–75% agreement rate: your most informative training signal comes from
+your <em>least reliable</em> labels. That's the uncomfortable math at the heart of reward
+modeling — B2's "quality over quantity," now with a derivation.</p>
+<p><strong>Second, the invariance:</strong> L(r + c) = L(r) for any constant c — the
+formal proof of the margins-only trap (§1's warm-up). <strong>Third, Gao's coordinate
+system:</strong> d = √KL(π‖π<sub>ref</sub>) is the x-axis the whole fight is plotted
+on. The KL penalty isn't a regularization knob; it's the ruler — and β sets how far
+right of home the policy may travel. This is the deeper answer to B3's "why does the
+KL term exist."</p>
+
+<h2><span class="n">7</span>The defense catalog — shaping for the judge</h2>
+<p>Defense in depth. Each layer answers a different failure mode from §§4–5:</p>
+<div class="gotcha"><strong>Keep the policy in the judge's competence zone.</strong> The KL penalty β·KL(π‖π<sub>ref</sub>) is a shaping term in the most literal sense — it sets the travel budget in the d = √KL coordinate system. (The <a href="https://deep1blue.github.io/infra-notebook/posts/2026-09-29-reward-shaping-field-guide.html">reward-shaping field guide</a> is the full countermeasure catalog for this fight.)</div>
+<div class="gotcha"><strong>Harden the judge.</strong> Train an <em>ensemble</em> of reward models on different seeds and data splits; treat disagreement as uncertainty and optimize conservatively in high-variance regions. Orthogonal to just scaling the RM up.</div>
+<div class="gotcha"><strong>Verify what you can.</strong> Where the task admits a checker — math, code, formal proofs — replace the learned proxy with a deterministic verifier (RLVR, node B9's preview). The attack surface shrinks to the checker's spec.</div>
+<div class="gotcha"><strong>De-shape the cheap proxies.</strong> Explicit length penalties and style ablations, so verbosity stops being free money. Measure how much of your win-rate is formatting before celebrating it.</div>
+<div class="gotcha"><strong>Reward the process, not just the outcome.</strong> Process supervision scores intermediate reasoning steps, where the judge's blind spots are smaller (node B7's territory).</div>
+<div class="gotcha"><strong>Audit the judge before optimizing against it.</strong> Best-of-N as a diagnostic: sample N candidates, rerank with the RM, and check whether gold preference follows — before you let PPO loose on it. Staff one-liner: <em>never optimize against a judge you haven't measured on fresh on-policy rollouts.</em></div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the explainers worth bookmarking</h4>
+<ul>
+<li><a href="https://lilianweng.github.io/posts/2024-11-28-reward-hacking/">Reward Hacking in Reinforcement Learning</a> (Lilian Weng, 2024) — the gold-standard survey: four decay modes of a proxy (regressional, extremal, causal, adversarial) and the Gao curve, with LLM examples.</li>
+<li><a href="https://huggingface.co/blog/rlhf">Illustrating Reinforcement Learning from Human Feedback</a> (HuggingFace blog) — the clearest visual walkthrough of the three-stage pipeline and the reward model's role.</li>
+<li>Nathan Lambert's <a href="https://rlhfbook.com">RLHF book</a> — the practitioner reference: labeler pipelines, agreement numbers, and the production details papers skip.</li>
+<li><a href="https://deep1blue.github.io/infra-notebook/posts/2026-09-29-reward-shaping-field-guide.html">Reward-shaping field guide</a> (The Infra Notebook) — 15 shaping techniques in 4 tiers with formulas and adopters; today's defense catalog is its application to the judge.</li>
+</ul>
+</div>
+
+<h2><span class="n">8</span>Self-test</h2>
+<details><summary>1. Response A scores 3.2 on prompt X; response B scores 1.1 on prompt Y. Which is better?</summary>
+<p><strong>Trick question — you can't say.</strong> The BT loss cares only about margins within a prompt; L(r + c) = L(r), so rewards are defined up to an additive constant per prompt. Only relative judgment, per prompt, was ever promised.</p></details>
+<details><summary>2. Why does the BT loss only need pairwise comparisons — and why is that the economic engine of RLHF?</summary>
+<p><strong>Humans compare reliably in seconds but can't hold absolute scales.</strong> Writing a demonstration takes ~10 minutes of expert attention; ranking takes seconds of labeler time. The loss turns the cheap input into a climbable function — that's why preference data (33k) outscaled demonstration data (13k) in InstructGPT.</p></details>
+<details><summary>3. Where does the BT loss learn the most — and why is that uncomfortable?</summary>
+<p><strong>On close pairs:</strong> ∇L is weighted by σ(−Δr), so confident wins contribute ~nothing. But labeler agreement is 60–75%, so close pairs are exactly the noisiest labels. Your strongest signal rides on your weakest data — B2's "quality over quantity," derived.</p></details>
+<details><summary>4. RM validation loss is still improving, but production quality is dropping. First diagnostic?</summary>
+<p><strong>Measure preference on fresh on-policy rollouts against a gold standard.</strong> RM val loss is on-distribution preference prediction — it cannot see off-distribution exploitation. The production failure is the policy wandering where the judge was never calibrated. Plot KL(π‖π_ref) over training and check reward-vs-length correlation too.</p></details>
+<details><summary>5. Sketch Gao's overoptimization curve from memory. Where do you operate, and what sets that position?</summary>
+<p><strong>x-axis:</strong> d = √KL(π‖π_ref); <strong>y-axis:</strong> score. Proxy climbs monotonically; gold rises, peaks, then declines. Operate <strong>left of the peak</strong> — β (the KL penalty) is the travel budget along the x-axis. Early-stop on gold-ish on-policy metrics, never on proxy metrics.</p></details>
+<details><summary>6. Name three distinct defense layers against reward hacking and the failure mode each answers.</summary>
+<p><strong>KL penalty</strong> → keeps the policy in the judge's competence zone (distribution shift). <strong>RM ensembles + conservative optimization</strong> → penalizes high-uncertainty regions (judge blind spots). <strong>Verifiable rewards (RLVR)</strong> → replaces the learned proxy where a checker exists (proxy gaming). Bonus: length de-shaping (verbosity bias), process supervision (outcome-only blindness).</p></details>
+<details><summary>7. You trained the RM on completions from a different, stronger model. What's wrong?</summary>
+<p><strong>Competence-zone mismatch:</strong> the RM learned to judge that model's distribution, while PPO explores from your policy's distribution — off-policy in both directions. The judge's calibrated territory must overlap the optimizer's travel territory, or scores out there are confident guesses.</p></details>
+<details><summary>8. DPO eliminates the reward model but keeps Bradley–Terry. How is that possible?</summary>
+<p><strong>Preview of B6:</strong> DPO reparameterizes the optimal policy so the BT preference likelihood is expressed directly in terms of policy ratios π_φ/π_ref — the BT loss survives, but the explicit r_θ never gets built. Today's loss function is tomorrow's derivation; learn it cold.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"Your reward model is being gamed — how do you tell, and how do you fix it?" → "Reward hacking is Goodhart on the reward model: the policy finds the judge's blind spots, proxy scores climb, true quality falls — Gao et al. measured exactly this, gold reward peaking then declining against KL distance from the reference policy. You detect it by measuring preference on <em>fresh on-policy</em> rollouts against a gold standard, because proxy metrics like RM validation loss are on-distribution and can't see off-distribution exploitation. The fix is layered: keep the policy inside the judge's competence zone with the KL penalty, harden the judge with ensembles and length de-shaping, verify what's verifiable instead of modeling it, and stop left of the peak. And per Skalse, a non-trivial proxy is always hackable — so the question is never whether it can be hacked, only whether your optimization pressure stays left of the peak."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · October 2026<br>
+  Builds on: B3 RLHF pipeline · Connects to: B5 PPO mechanics → B6 DPO → B7 GRPO/RLOO · Full curriculum: <a href="https://deep1blue.github.io/infra-notebook/curriculum.html">the roadmap</a>
+</footer>
+
+</div>
+</body>
+</html>
