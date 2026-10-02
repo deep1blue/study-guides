@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPO: The Clip That Tames the Optimizer — Study Guide | The Infra Notebook</title>
+<meta name="description" content="Proximal Policy Optimization from intuition to mechanism to the math that matters: the clipped surrogate, GAE, the value head, the two KLs, and the production practices that keep RLHF stable.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Post-Training B5</div>
+<h1>PPO: The Clip That Tames the Optimizer</h1>
+<div class="dateline">October 2, 2026 · Interview-prep series</div>
+<p class="lede">Vanilla policy gradients can shove a token's probability 50× in a single
+update — straight into regions the reward model never learned. PPO's answer is a trust
+region in ten lines: one ratio, one clip, one pessimistic min(). This guide goes
+intuition → mechanism → math, with the production practices interviewers actually probe.</p>
+
+<figure class="hero">
+  <img src="assets/hero-ppo.webp" alt="Hand-drawn anime illustration of a robot engineer guiding a smaller robot up a steep hill toward a trophy on a leash, with a trust-region bubble constraining each step">
+  <figcaption>Meet the climber: one ratio, one clip, and the pessimistic min() that keeps every step on the leash.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Why PPO exists</h2>
+<p>Vanilla policy gradient says: take actions that got reward, in proportion to how
+surprising they were — ∇J = E[r(θ) · Â · ∇log π], with r(θ) = π<sub>θ</sub>/π<sub>θ_old</sub>
+correcting for the fact that the data came from yesterday's policy. The problem is
+<strong>staleness</strong>: after one gradient step the policy has moved, but your sampled
+completions still came from the old one. One lucky batch — a fluky token with a huge
+advantage — and a single update can shove that token's probability from 1% to 40%. Now
+the policy lives where the reward model never trained. That is B4's off-distribution
+exploitation wearing a different name: the optimizer sprinting past the peak on Gao's
+curve in <em>one step</em>.</p>
+<p>TRPO's answer (Schulman et al., 2015) was a hard KL constraint on every update —
+principled, second-order, expensive. PPO's answer (Schulman et al., 2017) keeps the
+trust-region idea and enforces it with a clip: let any token's probability move, but never
+more than (1±ε) times its old value per update. <strong>Clipping turns "climb the reward
+hill" into "climb, but only one leashed step at a time."</strong></p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the trust-region lineage</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/1502.05477">Trust Region Policy Optimization</a> (Schulman et al., 2015) — the predecessor: a hard KL constraint, conjugate gradients, and the monotonic-improvement theory PPO approximates.</li>
+<li><a href="https://arxiv.org/abs/1707.06347">Proximal Policy Optimization Algorithms</a> (Schulman et al., 2017) — the paper itself: the clipped surrogate, the adaptive-KL variant, and why the clip won.</li>
+</ul>
+</div>
+
+<h2><span class="n">2</span>The clipped surrogate — the whole mechanism</h2>
+<div class="formula">L<sup>CLIP</sup>(θ) = E<sub>t</sub>[ min( r<sub>t</sub>(θ) Â<sub>t</sub>, clip(r<sub>t</sub>(θ), 1−ε, 1+ε) Â<sub>t</sub> ) ]</div>
+<p>The ratio r<sub>t</sub>(θ) = π<sub>θ</sub>(a<sub>t</sub>|s<sub>t</sub>) / π<sub>θ_old</sub>(a<sub>t</sub>|s<sub>t</sub>)
+measures how far this token's probability has moved since the data was sampled; the clip
+chops it to [1−ε, 1+ε] (ε = 0.2 is the industry default); the min() takes the
+<em>pessimistic</em> one. The asymmetry is exact and worth memorizing: the clip bounds
+how much you can <strong>gain</strong> in one update, never how much you can
+<strong>lose</strong>. Move in the direction the advantage wants, past the clip boundary —
+no extra credit, the objective goes flat. Move the <em>wrong</em> way — raise a bad token's
+probability, lower a good one's — and the min() picks the unclipped term, delivering the
+full penalty. Every step is capped on the upside and honest on the downside.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 360" role="img" aria-label="Clipped surrogate objective shape for positive and negative advantage">
+  <text x="185" y="24" text-anchor="middle" font-size="16" font-weight="bold" fill="#2b2620">Â &gt; 0 — good token</text>
+  <text x="575" y="24" text-anchor="middle" font-size="16" font-weight="bold" fill="#2b2620">Â &lt; 0 — bad token</text>
+  <line x1="30" y1="300" x2="350" y2="300" stroke="#6f655a" stroke-width="2"/>
+  <line x1="400" y1="300" x2="720" y2="300" stroke="#6f655a" stroke-width="2"/>
+  <line x1="30" y1="60" x2="30" y2="300" stroke="#6f655a" stroke-width="2"/>
+  <line x1="400" y1="60" x2="400" y2="300" stroke="#6f655a" stroke-width="2"/>
+  <text x="185" y="322" text-anchor="middle" font-size="13" fill="#6f655a">r(θ) →</text>
+  <text x="575" y="322" text-anchor="middle" font-size="13" fill="#6f655a">r(θ) →</text>
+  <line x1="184" y1="60" x2="184" y2="300" stroke="#c05621" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="184" y="322" text-anchor="middle" font-size="13" fill="#c05621">1+ε</text>
+  <line x1="502" y1="60" x2="502" y2="300" stroke="#c05621" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="502" y="322" text-anchor="middle" font-size="13" fill="#c05621">1−ε</text>
+  <polyline points="30,300 184,108 350,108" fill="none" stroke="#1f6f6b" stroke-width="3.5"/>
+  <polyline points="400,137 502,137 720,300" fill="none" stroke="#1f6f6b" stroke-width="3.5"/>
+  <text x="270" y="92" font-size="13" font-style="italic" fill="#1f6f6b">plateau: no credit for overshooting</text>
+  <text x="450" y="120" font-size="13" font-style="italic" fill="#1f6f6b">flat: no credit for overshooting</text>
+  <text x="640" y="235" font-size="13" font-style="italic" fill="#a03d2d">steep: backsliding fully penalized</text>
+  <text x="90" y="235" font-size="13" font-style="italic" fill="#a03d2d">steep: wrong direction fully penalized</text>
+  <text x="184" y="292" text-anchor="middle" font-size="12" fill="#6f655a">1.0</text>
+  <text x="502" y="292" text-anchor="middle" font-size="12" fill="#6f655a">1.0</text>
+</svg>
+<div class="cap">Figure 1 — The clipped surrogate. Gains plateau past the clip boundary in the good direction; wrong-direction moves are punished without bound. Bounded upside, honest downside.</div>
+</div>
+
+<h2><span class="n">3</span>The rollout loop — five stages per iteration</h2>
+<ol>
+<li><strong>Roll out:</strong> freeze the policy as π<sub>θ_old</sub> and generate completions — this is where the wall-clock goes, and why generation throughput (vLLM, async rollout workers; B8's subject) is the bottleneck of RLHF, not the gradient step.</li>
+<li><strong>Score:</strong> the reward model scores each completion, and the per-token KL penalty against π<sub>ref</sub> is folded in: r<sub>t</sub> = r<sub>RM</sub> − β · log(π<sub>θ</sub>/π<sub>ref</sub>). Every token pays rent for drifting from the judge's competence zone.</li>
+<li><strong>Advantage:</strong> compute Â<sub>t</sub> with GAE (§4).</li>
+<li><strong>Update:</strong> run K epochs of minibatch SGD (typically 4) over the <em>same</em> rollout batch. This reuse is PPO's sample-efficiency trick — and the clip is what makes reuse survivable, since epoch 3 would otherwise optimize on data three gradient steps stale.</li>
+<li><strong>Discard:</strong> throw the batch away. PPO is strictly on-policy; yesterday's rollouts are today's poison.</li>
+</ol>
+
+<div class="diagram">
+<svg viewBox="0 0 760 250" role="img" aria-label="PPO rollout loop pipeline">
+  <g font-size="13.5" font-weight="bold">
+    <rect x="8" y="70" width="128" height="64" rx="10" fill="#f3ddc8" stroke="#c05621"/><text x="72" y="98" text-anchor="middle" fill="#2b2620">Roll out</text><text x="72" y="118" text-anchor="middle" fill="#6f655a" font-weight="normal" font-size="11.5">πθ_old generates</text>
+    <rect x="164" y="70" width="128" height="64" rx="10" fill="#e6f2e8" stroke="#1f6f6b"/><text x="228" y="98" text-anchor="middle" fill="#2b2620">Score</text><text x="228" y="118" text-anchor="middle" fill="#6f655a" font-weight="normal" font-size="11.5">RM − β·KL</text>
+    <rect x="320" y="70" width="128" height="64" rx="10" fill="#efe7d4" stroke="#c9bfa8"/><text x="384" y="98" text-anchor="middle" fill="#2b2620">Advantage</text><text x="384" y="118" text-anchor="middle" fill="#6f655a" font-weight="normal" font-size="11.5">GAE, λ≈0.95</text>
+    <rect x="476" y="70" width="128" height="64" rx="10" fill="#f3ddc8" stroke="#c05621"/><text x="540" y="98" text-anchor="middle" fill="#2b2620">Update ×K</text><text x="540" y="118" text-anchor="middle" fill="#6f655a" font-weight="normal" font-size="11.5">clipped surrogate</text>
+    <rect x="632" y="70" width="120" height="64" rx="10" fill="#f3e2e2" stroke="#a03d2d"/><text x="692" y="98" text-anchor="middle" fill="#2b2620">Discard</text><text x="692" y="118" text-anchor="middle" fill="#6f655a" font-weight="normal" font-size="11.5">on-policy only</text>
+  </g>
+  <g stroke="#6f655a" stroke-width="2.5" fill="none">
+    <line x1="136" y1="102" x2="160" y2="102"/><polygon points="164,102 154,96 154,108" fill="#6f655a" stroke="none"/>
+    <line x1="292" y1="102" x2="316" y2="102"/><polygon points="320,102 310,96 310,108" fill="#6f655a" stroke="none"/>
+    <line x1="448" y1="102" x2="472" y2="102"/><polygon points="476,102 466,96 466,108" fill="#6f655a" stroke="none"/>
+    <line x1="604" y1="102" x2="628" y2="102"/><polygon points="632,102 622,96 622,108" fill="#6f655a" stroke="none"/>
+  </g>
+  <path d="M 692 134 C 692 200, 72 200, 72 138" stroke="#a03d2d" stroke-width="2.5" fill="none" stroke-dasharray="7 5"/>
+  <polygon points="72,134 66,144 78,144" fill="#a03d2d"/>
+  <text x="382" y="192" text-anchor="middle" font-size="14" font-style="italic" fill="#a03d2d">next iteration: fresh rollouts from the updated policy</text>
+  <text x="382" y="222" text-anchor="middle" font-size="13.5" font-style="italic" fill="#6f655a">Generation wants throughput · the update wants fresh data — that tension is B8's whole subject.</text>
+</svg>
+<div class="cap">Figure 2 — One PPO iteration. The clip is what lets stage 4 reuse the batch for K epochs without the staleness failure of §1.</div>
+</div>
+
+<h2><span class="n">4</span>GAE and the value head — the math that matters</h2>
+<p>Raw returns are far too noisy to learn from — one lucky completion swamps the signal —
+so PPO learns from <em>how much better than expected</em> each token was. The value head
+V<sub>φ</sub>(s<sub>t</sub>) — a second scalar head, usually <strong>initialized from the
+reward model</strong> — predicts expected return from each state, and the TD error
+δ<sub>t</sub> = r<sub>t</sub> + γV(s<sub>t+1</sub>) − V(s<sub>t</sub>) measures the
+surprise. GAE blends n-step surprises:</p>
+<div class="formula">Â<sub>t</sub> = Σ<sub>l≥0</sub> (γλ)<sup>l</sup> δ<sub>t+l</sub></div>
+<p>λ = 1 is full Monte Carlo (unbiased, high variance); λ = 0 is one-step TD (biased, low
+variance); λ ≈ 0.95 is the standard compromise. The value loss, L<sup>VF</sup> =
+E[(V<sub>φ</sub>(s<sub>t</sub>) − V<sub>target</sub>)²] — often with its own clip on the
+value update — is not a side quest: a bad value estimate injects bias into every
+advantage, and the advantage is the entire learning signal.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 300" role="img" aria-label="GAE weighting of TD errors across time">
+  <text x="380" y="26" text-anchor="middle" font-size="16" font-weight="bold" fill="#2b2620">How much of each future surprise counts (γλ)<sup>l</sup></text>
+  <g>
+    <rect x="90" y="70" width="60" height="150" fill="#c05621" opacity=".95"/><text x="120" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt</text><text x="120" y="258" text-anchor="middle" font-size="12" fill="#6f655a">l=0</text>
+    <rect x="160" y="104" width="60" height="116" fill="#c05621" opacity=".8"/><text x="190" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt+1</text><text x="190" y="258" text-anchor="middle" font-size="12" fill="#6f655a">l=1</text>
+    <rect x="230" y="133" width="60" height="87" fill="#c05621" opacity=".65"/><text x="260" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt+2</text><text x="260" y="258" text-anchor="middle" font-size="12" fill="#6f655a">l=2</text>
+    <rect x="300" y="157" width="60" height="63" fill="#c05621" opacity=".5"/><text x="330" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt+3</text><text x="330" y="258" text-anchor="middle" font-size="12" fill="#6f655a">l=3</text>
+    <rect x="370" y="176" width="60" height="44" fill="#c05621" opacity=".38"/><text x="400" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt+4</text>
+    <rect x="440" y="190" width="60" height="30" fill="#c05621" opacity=".28"/><text x="470" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">δt+5</text>
+    <rect x="510" y="200" width="60" height="20" fill="#c05621" opacity=".2"/><text x="540" y="240" text-anchor="middle" font-size="12.5" fill="#2b2620">…</text>
+  </g>
+  <text x="640" y="120" font-size="14" font-style="italic" fill="#6f655a">λ = 1: every bar full</text>
+  <text x="640" y="145" font-size="14" font-style="italic" fill="#6f655a">height — Monte Carlo,</text>
+  <text x="640" y="170" font-size="14" font-style="italic" fill="#6f655a">unbiased, high variance</text>
+  <text x="640" y="205" font-size="14" font-style="italic" fill="#6f655a">λ = 0: only δt survives</text>
+  <text x="640" y="230" font-size="14" font-style="italic" fill="#6f655a">— one-step TD</text>
+  <text x="90" y="292" font-size="13.5" font-style="italic" fill="#6f655a">λ ≈ 0.95: the standard compromise — mostly near-term surprises, a fading tail of long-horizon credit.</text>
+</svg>
+<div class="cap">Figure 3 — GAE's λ dial. Each bar is a future TD error's weight in today's advantage; λ sets how fast the tail decays.</div>
+</div>
+
+<div class="deepdive">
+<h4>📄 Deep dive — advantage estimation</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/1506.02438">High-Dimensional Continuous Control Using Generalized Advantage Estimation</a> (Schulman et al., 2015) — GAE itself: the λ bias–variance dial and why λ≈0.95 became the default.</li>
+<li><a href="https://arxiv.org/abs/2203.02155">Training language models to follow instructions with human feedback</a> (Ouyang et al., 2022) — PPO at LLM scale: the per-token KL penalty, the value head, the recipe every RLHF stack copies.</li>
+</ul>
+</div>
+
+<h2><span class="n">5</span>The two KLs — why both exist</h2>
+<p>The clip constrains movement relative to π<sub>θ_old</sub> — this iteration's trust
+region, guarding the <strong>step</strong>. The per-token KL penalty against π<sub>ref</sub>
+constrains distance from the SFT anchor — B4's d-axis, guarding the
+<strong>journey</strong> inside the reward model's competence zone. PPO's paper actually
+shipped an adaptive-KL variant too; practice converged on clip <em>plus</em> KL penalty,
+because one mechanism was never enough. Your training dashboard plots KL(π‖π<sub>ref</sub>)
+per step: flat at zero means the leash is a choke chain (β too high), runaway means you're
+right of Gao's peak and the clip can't save you.</p>
+
+<h2><span class="n">6</span>Production practice — what makes or breaks LLM runs</h2>
+<p><strong>Advantage whitening</strong> — normalize Â per batch, or one prompt's reward
+scale dominates the update. <strong>KL controllers</strong> — adaptive β targeting a KL
+budget, because a fixed β is either a choke chain or a decoration. <strong>Clip
+discipline</strong> — ε = 0.2 standard, sometimes annealed late in training, and the
+fraction of clipped ratios is a health metric (near 100% clipped = the trust region binds
+everywhere; the policy is fighting the leash, not learning). <strong>No entropy
+bonus</strong> — textbook PPO adds one for exploration, but in LLMs it fights the KL
+anchor and buys gibberish diversity nobody wants. <strong>Value-head init from the
+RM</strong> — a randomly initialized V<sub>φ</sub> poisons every advantage for the first
+hundred steps. <strong>Token-count averaging</strong> — PPO's loss is token-level, so a
+4k-token completion contributes 4k clipped ratios to the average; the SFT "watch token
+count, not example count" subtlety returns verbatim, one rung harder.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the explainers worth bookmarking</h4>
+<ul>
+<li><a href="https://lilianweng.github.io/posts/2018-04-08-policy-gradient/">Policy Gradient Algorithms</a> (Lilian Weng, 2018) — the canonical tour from REINFORCE through TRPO to PPO, with the derivations done properly. The single best long read on the lineage.</li>
+<li><a href="https://spinningup.openai.com/en/latest/algorithms/ppo.html">Proximal Policy Optimization</a> (OpenAI Spinning Up) — the cleanest pseudocode-level treatment of the clipped objective; read this before touching an implementation.</li>
+<li><a href="https://huggingface.co/docs/trl/ppo_trainer">TRL: PPO Trainer documentation</a> (Hugging Face) — what the LLM defaults actually are: KL controllers, whitening, and the four-model memory bill (policy, reference, reward, value).</li>
+</ul>
+</div>
+
+<h2><span class="n">7</span>The 8 gotchas — know the <em>why</em></h2>
+
+<div class="gotcha"><strong>1. Clip ≠ KL.</strong> The clip guards the step vs π<sub>θ_old</sub>; the KL penalty guards the journey vs π<sub>ref</sub>. Lose one and you lose the guarantee the other was buying.</div>
+<div class="gotcha"><strong>2. Value head from scratch.</strong> A randomly initialized V<sub>φ</sub> poisons every advantage for the first hundred steps. Init it from the reward model, which already scores states.</div>
+<div class="gotcha"><strong>3. No advantage whitening.</strong> One prompt's reward scale dominates the batch and the clip binds on the wrong tokens. Normalize Â per batch.</div>
+<div class="gotcha"><strong>4. Too many epochs on stale rollouts.</strong> PPO is on-policy; epoch 5 is optimizing a rumor. If KL(π‖π<sub>θ_old</sub>) drifts mid-epoch, regenerate more often.</div>
+<div class="gotcha"><strong>5. Fixed β forever.</strong> KL collapses to zero (choke chain, policy never leaves home) or runs away (right of the peak). Use a KL controller targeting a budget.</div>
+<div class="gotcha"><strong>6. Entropy bonus in LLMs.</strong> Fights the KL anchor and buys gibberish diversity. Drop it — the KL penalty already prices exploration.</div>
+<div class="gotcha"><strong>7. Token-count averaging.</strong> A 4k-token completion contributes 4k clipped ratios. Monitor token counts, not example counts — the SFT subtlety, one rung harder.</div>
+<div class="gotcha"><strong>8. Clipping fraction at 100%.</strong> The trust region binds everywhere — the policy is fighting the leash, not learning. Usually means ε too small or the LR too hot for the rollout freshness.</div>
+
+<h2><span class="n">8</span>Self-test</h2>
+<p>Cover the answers. Say each one aloud until it's clean.</p>
+
+<details><summary>1. Vanilla PG can move a token's probability 50× in one step. Why does that break RLHF?</summary>
+<p>The data is on-policy from π<sub>θ_old</sub>, so after one big step it's stale — and the new policy lives where the reward model never trained. That's off-distribution exploitation: sprinting past the peak on Gao's over-optimization curve in a single update.</p></details>
+
+<details><summary>2. Write L<sup>CLIP</sup> and explain the two cases of the min().</summary>
+<p>L<sup>CLIP</sup> = E[min(rÂ, clip(r,1−ε,1+ε)Â)]. For Â&gt;0, the min caps the upside at (1+ε)Â — no credit for pushing the ratio further. For Â&lt;0, the objective goes flat below 1−ε (no credit for overshooting) while wrong-direction moves take the unclipped penalty. Bounded upside, honest downside.</p></details>
+
+<details><summary>3. Why does PPO run K epochs on the same batch — and what makes that survivable?</summary>
+<p>Sample efficiency: rollouts are expensive, so reuse each batch ~4 times. The clip makes it survivable — without it, epoch 3 would optimize on data three gradient steps stale, the exact staleness failure PPO exists to prevent.</p></details>
+
+<details><summary>4. Why both a clip and a KL penalty?</summary>
+<p>The clip guards the <em>step</em> (trust region vs π<sub>θ_old</sub>, this iteration); the KL penalty guards the <em>journey</em> (distance from π<sub>ref</sub>, B4's d-axis — the reward model's competence zone). One mechanism was never enough.</p></details>
+
+<details><summary>5. What is GAE's λ trading off, and what's the standard value?</summary>
+<p>λ=1 is full Monte Carlo (unbiased, high variance); λ=0 is one-step TD (biased, low variance). λ≈0.95 is the standard compromise — mostly near-term surprises with a fading long-horizon tail.</p></details>
+
+<details><summary>6. Why initialize the value head from the reward model?</summary>
+<p>A random V<sub>φ</sub> injects bias into every advantage — and the advantage is the entire learning signal — for the first hundred steps. The RM already scores states, so it's the natural warm start.</p></details>
+
+<details><summary>7. Name three production PPO practices and what each defends against.</summary>
+<p>Advantage whitening (one prompt's scale dominating); KL controllers (β fixed too high = choke chain, too low = right of the peak); clip discipline + clipped-ratio health metric (trust region binding everywhere); no entropy bonus (fights the KL anchor); value-head init from the RM.</p></details>
+
+<details><summary>8. Reward climbs while human eval degrades. Diagnose and fix.</summary>
+<p>Right of Gao's peak: the policy is exploiting the judge off-distribution. The clip can't save you — raise β / tighten the KL budget, or early-stop on gold-standard preference. Detect it on fresh on-policy rollouts, never on RM validation loss.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"Why does PPO clip, and why does it work for LLMs?" — "Vanilla policy gradients are
+on-policy: after one update your data is stale, and one lucky batch can shove a token's
+probability 50× — straight into regions the reward model never learned, which is reward
+hacking by another name. PPO's clipped surrogate, L = E[min(rÂ, clip(r, 1±ε)Â)], bounds
+how much you can <em>gain</em> in one update while leaving losses honest: overshoot in the
+good direction and the objective plateaus; move the wrong way and the full penalty
+applies. That's a trust region in ten lines. LLM PPO adds a per-token KL penalty against
+π<sub>ref</sub> — the clip guards each step, the KL penalty guards the journey along Gao's
+d-axis. GAE with λ ≈ 0.95 trades bias for variance, and the value head, initialized from
+the reward model, is half the algorithm."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · October 2026<br>
+  Builds on: B4 reward modeling · B3 RLHF pipeline · B1 SFT · Connects to: B6 DPO → B7 GRPO → B8 RL infra → B9 RLVR
+</footer>
+
+</div>
+</body>
+</html>
