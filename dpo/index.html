@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DPO: Your Language Model Is Secretly a Reward Model — Study Guide | The Infra Notebook</title>
+<meta name="description" content="Direct Preference Optimization, from the closed-form solution to the loss: the KL-constrained objective's analytic answer, the partition-function cancellation, the gradient's dynamic weight, the variant family tree, and the failure modes interviewers probe.">
+<style>
+  :root{
+    --paper:#f7f2e7; --ink:#2b2620; --muted:#6f655a;
+    --accent:#c05621; --accent-soft:#f3ddc8; --teal:#1f6f6b;
+    --card:#fffdf7; --line:#e2d7c2; --code-bg:#efe7d4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:Georgia,'Times New Roman',serif;line-height:1.75;font-size:18px}
+  .wrap{max-width:820px;margin:0 auto;padding:0 22px 90px}
+  header.site{border-bottom:3px double var(--line);padding:18px 0;margin-bottom:8px}
+  header.site a{color:var(--muted);text-decoration:none;font-size:15px;letter-spacing:.06em;text-transform:uppercase}
+  header.site a:hover{color:var(--accent)}
+  .kicker{font-size:14px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);margin:34px 0 10px}
+  h1{font-size:44px;line-height:1.15;margin:0 0 14px;font-weight:700}
+  .dateline{color:var(--muted);font-style:italic;margin-bottom:26px}
+  .lede{font-size:21px;line-height:1.65;color:#3d362c}
+  figure.hero{margin:34px 0;border:1px solid var(--line);background:var(--card);padding:10px}
+  figure.hero img{width:100%;display:block}
+  figcaption{font-size:14px;color:var(--muted);font-style:italic;padding:8px 4px 2px}
+  h2{font-size:30px;margin:58px 0 8px;padding-top:26px;border-top:1px solid var(--line)}
+  h2 .n{color:var(--accent);margin-right:10px}
+  h3{font-size:22px;margin:34px 0 6px}
+  p{margin:14px 0}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.86em;background:var(--code-bg);
+    padding:2px 7px;border-radius:4px}
+  pre{background:#2b2620;color:#f3ead8;padding:20px 22px;border-radius:8px;overflow-x:auto;
+    font-size:15px;line-height:1.7}
+  pre .cm{color:#9a8f7d} pre .hl{color:#f6b26b}
+  .diagram{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:22px;margin:26px 0}
+  .diagram svg{width:100%;height:auto;display:block}
+  .diagram .cap{font-size:14px;color:var(--muted);font-style:italic;margin-top:10px}
+  .deepdive{background:#fbf4e4;border-left:5px solid var(--accent);border-radius:0 10px 10px 0;
+    padding:18px 22px;margin:28px 0}
+  .deepdive h4{margin:0 0 8px;font-size:17px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .deepdive ul{margin:8px 0;padding-left:20px}
+  .deepdive li{margin:8px 0}
+  .deepdive a{color:var(--teal);font-weight:bold}
+  .gotcha{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:16px 20px;margin:14px 0}
+  .gotcha strong{color:var(--accent)}
+  .formula{background:#2b2620;color:#f3ead8;border-radius:10px;padding:22px;margin:26px 0;
+    text-align:center;font-size:22px;overflow-x:auto}
+  details{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:14px 20px;margin:12px 0}
+  details summary{cursor:pointer;font-weight:bold;color:var(--teal)}
+  details summary:hover{color:var(--accent)}
+  .takeaway{border:3px double var(--accent);border-radius:12px;padding:24px 26px;margin:50px 0;
+    background:#fffaf0}
+  .takeaway h3{margin-top:0;color:var(--accent)}
+  footer{margin-top:70px;border-top:3px double var(--line);padding-top:20px;color:var(--muted);
+    font-size:15px;font-style:italic}
+  a{color:var(--teal)}
+  @media(max-width:640px){h1{font-size:32px}body{font-size:17px}.formula{font-size:17px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="site"><a href="../index.html">← Study Guides</a></header>
+
+<div class="kicker">Study Guide · Post-Training B6</div>
+<h1>DPO: Your Language Model Is Secretly a Reward Model</h1>
+<div class="dateline">October 3, 2026 · Interview-prep series</div>
+<p class="lede">Yesterday you operated the full RLHF machine: a reward model, a value head, a
+rollout loop with generation inside the training step, and a clip holding the trust region.
+Today the machine dissolves into a single line of math. Direct Preference Optimization starts
+from the same KL-constrained objective PPO climbs — and notices it has a closed-form solution.
+Solve it on paper, invert it, and the reward function turns out to be hiding inside the policy
+itself. This guide walks the full derivation: intuition → mechanism → the math that matters,
+plus the variant family tree and the failure modes interviewers actually probe.</p>
+
+<figure class="hero">
+  <img src="assets/hero-dpo.webp" alt="Hand-drawn anime illustration of an engineer holding up a single glowing equation on paper while a complex RL training factory dissolves into ink washes behind them">
+  <figcaption>Lesson B6: the RL factory dissolves — four model copies and the whole optimizer collapse into one equation.</figcaption>
+</figure>
+
+<h2><span class="n">1</span>Builds on — the prerequisites, reused</h2>
+<p><strong>B5 — PPO: The Clip That Tames the Optimizer.</strong> Recap: PPO climbs the
+KL-constrained objective <code>max_π E[r(x,y)] − β·KL(π ‖ π_ref)</code> with a clipped
+surrogate, a value head, and a five-stage rollout loop that keeps <em>four</em> model copies in
+GPU memory. Every piece of that machine exists to solve one optimization problem safely.
+Today you solve that problem <em>on paper</em> instead of climbing it.</p>
+<p><strong>B3 — the RLHF pipeline.</strong> Recap: stage three's one-line objective
+(maximize reward, stay near the SFT reference) becomes today's derivation <em>starting
+point</em>. We are not inventing a new objective — we are solving the old one analytically.</p>
+<p><strong>B4 — Reward Modeling.</strong> Recap: the Bradley–Terry loss you used to fit the
+judge is the exact loss the policy will now fit <em>directly</em>. And B4's over-optimization
+curve — proxy climbs, gold peaks, then declines against d = √KL — does not vanish when the
+judge goes implicit; it hides inside a log-ratio, which is why today's failure modes still
+echo B4.</p>
+<p><strong>Spaced retrieval, third appearance:</strong> remember the masked-CE averaging subtlety
+from SFT — "watch token count, not example count"? It returned in yesterday's token-level PPO
+loss; it returns <em>again</em> today, because DPO's implicit reward is a sum over token
+log-probs, and sequence length becomes a reward-hacking lever all on its own. (See §4.)</p>
+
+<h2><span class="n">2</span>Intuition — the closed form hiding in the textbook</h2>
+<p>Start with what PPO costs, because the entire algorithm is downstream of that bill: four
+model copies (policy, reference, reward model, value head), a rollout loop with generation —
+the slowest operation in the building — sitting <em>inside</em> the training step, a reward
+model that must be retrained the moment the policy drifts off its data, and five
+hyperparameters answering "how far may the policy move?" in five different dialects.</p>
+<p>DPO's authors asked a dangerous question: the thing the machine is optimizing — the
+KL-constrained reward objective — <em>does it have a closed-form solution?</em> For most RL
+objectives the answer is no. For this one, the answer is yes, and it has been sitting in the
+RL textbooks the whole time. The optimal policy for
+<code>max_π E_{y∼π}[r(x,y)] − β·KL(π(·|x) ‖ π_ref(·|x))</code> is a Boltzmann distribution
+over the reference, tilted by the reward:</p>
+<div class="formula">π*(y|x) = (1/Z(x)) · π<sub>ref</sub>(y|x) · exp(r(x,y)/β)</div>
+<p>Now read that equation <em>backwards</em> — solve for the reward:</p>
+<div class="formula">r(x,y) = β·log(π*(y|x)/π<sub>ref</sub>(y|x)) + β·log Z(x)</div>
+<p>The reward is the log-ratio of the optimal policy to the reference, plus a term that
+depends only on the prompt. The judge was never a separate thing: <strong>any policy already
+encodes a reward in its own log-ratios.</strong> Your language model is secretly a reward
+model — the paper's title, and now the derivation, says it out loud.</p>
+<p><strong>One-line version:</strong> PPO pays a whole factory to climb a hill; DPO notices the
+hill's summit has a formula, reads the formula backwards, and discovers the reward function
+was hiding inside the policy all along.</p>
+
+<h2><span class="n">3</span>Mechanism — from the closed form to the loss</h2>
+<p>From the inverted reward, the machinery assembles itself in five steps:</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 430" role="img" aria-label="DPO derivation pipeline in five steps">
+  <g font-size="15">
+    <text x="120" y="18" text-anchor="middle" fill="#c05621" font-size="13" font-weight="bold">STEP 1 · PPO's objective</text>
+    <rect x="10" y="26" width="220" height="96" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="120" y="56" text-anchor="middle" fill="#2b2620" font-size="13">max_π <tspan font-style="italic">E</tspan>[r(x,y)]</text>
+    <text x="120" y="78" text-anchor="middle" fill="#2b2620" font-size="13">− β·KL(π ‖ π<tspan baseline-shift="sub" font-size="10">ref</tspan>)</text>
+    <text x="120" y="102" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">climb it (PPO)</text>
+
+    <text x="380" y="18" text-anchor="middle" fill="#c05621" font-size="13" font-weight="bold">STEP 2 · solve it exactly</text>
+    <rect x="250" y="26" width="260" height="96" rx="10" fill="#fbf4e4" stroke="#c05621"/>
+    <text x="380" y="56" text-anchor="middle" fill="#2b2620" font-size="13">π*(y|x) = π<tspan baseline-shift="sub" font-size="10">ref</tspan>(y|x)·exp(r/β)</text>
+    <text x="380" y="78" text-anchor="middle" fill="#2b2620" font-size="13">÷ Z(x)</text>
+    <text x="380" y="102" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">closed form, not a rollout</text>
+
+    <text x="640" y="18" text-anchor="middle" fill="#c05621" font-size="13" font-weight="bold">STEP 3 · read backwards</text>
+    <rect x="530" y="26" width="220" height="96" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="640" y="56" text-anchor="middle" fill="#2b2620" font-size="13">r(x,y) = β·log(π*/π<tspan baseline-shift="sub" font-size="10">ref</tspan>)</text>
+    <text x="640" y="78" text-anchor="middle" fill="#2b2620" font-size="13">+ β·log Z(x)</text>
+    <text x="640" y="102" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">reward = log-ratio!</text>
+
+    <g stroke="#6f655a" stroke-width="2.5" fill="none">
+      <line x1="232" y1="74" x2="248" y2="74"/><polygon points="248,74 240,68 240,80" fill="#6f655a" stroke="none"/>
+      <line x1="512" y1="74" x2="528" y2="74"/><polygon points="528,74 520,68 520,80" fill="#6f655a" stroke="none"/>
+    </g>
+  </g>
+
+  <g stroke="#c05621" stroke-width="2.5" fill="none">
+    <line x1="380" y1="126" x2="380" y2="190"/><polygon points="380,196 373,186 387,186" fill="#c05621" stroke="none"/>
+  </g>
+  <text x="396" y="168" fill="#c05621" font-size="13" font-style="italic">substitute the reward expression</text>
+
+  <g font-size="15">
+    <text x="190" y="226" text-anchor="middle" fill="#c05621" font-size="13" font-weight="bold">STEP 4 · into Bradley–Terry</text>
+    <rect x="20" y="234" width="340" height="100" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="190" y="264" text-anchor="middle" fill="#2b2620" font-size="13">p(y<tspan baseline-shift="sub" font-size="10">w</tspan> ≻ y<tspan baseline-shift="sub" font-size="10">l</tspan>|x) = σ(r(x,y<tspan baseline-shift="sub" font-size="10">w</tspan>) − r(x,y<tspan baseline-shift="sub" font-size="10">l</tspan>))</text>
+    <text x="190" y="288" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">Z(x) appears in both terms…</text>
+    <text x="190" y="310" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">…and vanishes in the difference</text>
+
+    <text x="570" y="226" text-anchor="middle" fill="#c05621" font-size="13" font-weight="bold">STEP 5 · the cancellation</text>
+    <rect x="400" y="234" width="340" height="100" rx="10" fill="#e6f2e8" stroke="#1f6f6b"/>
+    <text x="570" y="264" text-anchor="middle" fill="#2b2620" font-size="13">L<tspan baseline-shift="sub" font-size="10">DPO</tspan> = −<tspan font-style="italic">E</tspan>[ log σ( β·Δ log-ratio ) ]</text>
+    <text x="570" y="288" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">pure classification over</text>
+    <text x="570" y="310" text-anchor="middle" fill="#6f655a" font-size="12" font-style="italic">(prompt, winner, loser) pairs</text>
+
+    <g stroke="#6f655a" stroke-width="2.5" fill="none">
+      <line x1="362" y1="284" x2="398" y2="284"/><polygon points="398,284 390,278 390,290" fill="#6f655a" stroke="none"/>
+    </g>
+  </g>
+
+  <text x="380" y="368" text-anchor="middle" fill="#2b2620" font-size="16" font-weight="bold">No reward model. No value head. No rollouts. No clip.</text>
+  <text x="380" y="394" text-anchor="middle" fill="#6f655a" font-size="14" font-style="italic">The intractable partition function Z(x) cancels — that is the whole magic trick.</text>
+</svg>
+<div class="cap">Figure 1 — The five-step derivation. The key move is step 5: Z(x) is prompt-dependent but
+pair-independent, so it cancels in the Bradley–Terry difference, leaving a loss over policies alone.</div>
+</div>
+
+<p>Plug that reward expression into B4's Bradley–Terry model,
+<code>p(y_w ≻ y_l | x) = σ(r(x,y_w) − r(x,y_l))</code>, and the partition function
+<strong>cancels</strong> — Z(x) appears in both terms and vanishes in the difference. What
+survives is a loss over policies alone:</p>
+<div class="formula">L<sub>DPO</sub>(θ) = −E<sub>(x,y<sub>w</sub>,y<sub>l</sub>)</sub>[ log σ( β·log(π<sub>θ</sub>(y<sub>w</sub>|x)/π<sub>ref</sub>(y<sub>w</sub>|x)) − β·log(π<sub>θ</sub>(y<sub>l</sub>|x)/π<sub>ref</sub>(y<sub>l</sub>|x)) ) ]</div>
+<p>Read it as <strong>classification, not RL</strong>: for each prompt with a preferred and a
+dispreferred completion, the sigmoid asks "does the policy rank the winner above the loser,
+<em>relative to the reference</em>?" and the log-loss pushes it toward yes.</p>
+<p>The gradient tells the deeper story:</p>
+<div class="formula">∇L = −β·E[ σ(r̂<sub>l</sub> − r̂<sub>w</sub>) · (∇log π<sub>θ</sub>(y<sub>w</sub>) − ∇log π<sub>θ</sub>(y<sub>l</sub>)) ]</div>
+<p>where r̂ = β·log(π<sub>θ</sub>/π<sub>ref</sub>) is the <strong>implicit reward</strong>. The
+weight σ(r̂<sub>l</sub> − r̂<sub>w</sub>) is large exactly when the model currently ranks the
+pair <em>wrongly</em>, and decays toward zero as the ranking becomes correct. Yesterday's clip
+was an engineered mechanism that said "don't get rich on one token" — DPO's weight is the same
+caution arrived at <em>analytically</em>: the update concentrates on the pairs the model still
+gets wrong and leaves mastered pairs alone.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 340" role="img" aria-label="Sigmoid dynamic weight curve for DPO gradient">
+  <text x="380" y="24" text-anchor="middle" fill="#2b2620" font-size="17" font-weight="bold">The gradient's dynamic weight: σ(r̂<tspan baseline-shift="sub" font-size="11">l</tspan> − r̂<tspan baseline-shift="sub" font-size="11">w</tspan>) vs the margin</text>
+  <line x1="90" y1="260" x2="690" y2="260" stroke="#6f655a" stroke-width="2"/>
+  <line x1="90" y1="40" x2="90" y2="260" stroke="#6f655a" stroke-width="2"/>
+  <line x1="390" y1="40" x2="390" y2="260" stroke="#c9c0ae" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="390" y="280" text-anchor="middle" fill="#6f655a" font-size="13">margin m = r̂_w − r̂_l = 0</text>
+  <text x="380" y="302" text-anchor="middle" fill="#6f655a" font-size="14" font-style="italic">x-axis: how correctly the model already ranks the pair (margin)</text>
+  <text x="45" y="160" text-anchor="middle" fill="#6f655a" font-size="14" font-style="italic" transform="rotate(-90 45 160)">update weight</text>
+  <text x="80" y="55" text-anchor="end" fill="#6f655a" font-size="12">1</text>
+  <text x="80" y="160" text-anchor="end" fill="#6f655a" font-size="12">0.5</text>
+  <text x="80" y="263" text-anchor="end" fill="#6f655a" font-size="12">0</text>
+  <path d="M90,41 C130,41 150,43 190,44 C230,45 260,55 290,66 C310,74 325,88 340,99 C360,116 375,132 390,150 C405,168 420,184 440,201 C460,218 475,228 490,234 C530,246 560,254 590,256 C630,258 660,259 690,259"
+        fill="none" stroke="#c05621" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="290" cy="66" r="6" fill="#c05621"/>
+  <text x="150" y="100" fill="#a03d2d" font-size="13.5" font-weight="bold">pair ranked WRONGLY</text>
+  <text x="150" y="120" fill="#a03d2d" font-size="13.5">weight ≈ 1 → full-strength update</text>
+  <circle cx="540" cy="245" r="6" fill="#1f6f6b"/>
+  <text x="420" y="120" fill="#1f6f6b" font-size="13.5" font-weight="bold">pair mastered</text>
+  <text x="420" y="140" fill="#1f6f6b" font-size="13.5">weight → 0 → gradient switches off</text>
+  <text x="380" y="326" text-anchor="middle" fill="#6f655a" font-size="14" font-style="italic">Yesterday's clip, arrived at analytically: the update focuses on the pairs the model still gets wrong.</text>
+</svg>
+<div class="cap">Figure 2 — The DPO update weight as a function of the current margin. Wrongly-ranked pairs
+get the full update; mastered pairs are left alone. No engineered clipping required.</div>
+</div>
+
+<p>And β, which was the KL-penalty strength in PPO, survives as the <strong>temperature</strong>
+of the implicit reward: small β keeps the log-ratios on a tight leash near the reference;
+large β lets preferences move the policy aggressively. One knob, same job, no adaptive
+controller required.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the derivation and the code</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/2305.18290">Direct Preference Optimization: Your Language Model is Secretly a Reward Model</a> (Rafailov et al., NeurIPS 2023) — the paper; read it for the closed-form derivation from the KL-constrained objective and the exact loss and gradient.</li>
+<li><a href="https://github.com/rasbt/LLMs-from-scratch/blob/main/ch07/04_preference-tuning-with-dpo/dpo-from-scratch.ipynb">DPO from scratch (Sebastian Raschka)</a> — the best code-level walkthrough of the loss: a few dozen lines of PyTorch that make the log-ratio and sigmoid concrete.</li>
+<li><a href="https://huggingface.co/docs/trl/main/en/dpo_trainer">TRL DPOTrainer docs (HuggingFace)</a> — the production implementation reference: how β, the frozen reference model, and the loss variants are actually wired in practice.</li>
+</ul>
+</div>
+<h2><span class="n">4</span>The math that matters — three pieces</h2>
+<p><strong>First, the derivation's hidden assumption.</strong> The closed form is exact only if
+the policy class can represent the optimum <em>and</em> the preference data is consistent with
+a single Bradley–Terry reward — the same <strong>transitivity assumption</strong> B4's judge
+quietly makes. Violate it — noisy labels, cyclic preferences, genuinely multimodal "good"
+answers — and DPO is fitting a reward that doesn't exist; it fits the noise instead. That is
+why DPO is famously sensitive to label noise, and why the documented inconsistencies in the
+Anthropic HH dataset bite DPO harder than they bite PPO: PPO's online rollouts can route
+around bad labels, while DPO's static loss <em>memorizes</em> them.</p>
+<p><strong>Second, the memory bill</strong> — the Staff-level line for the F1 design doc. PPO
+holds policy + reference + reward model + value head (four copies, plus optimizer states);
+DPO holds policy + reference (two). But note what you do <em>not</em> get to delete:
+π<sub>ref</sub> is still there, frozen, anchoring the KL budget. <strong>DPO is not
+reference-free</strong> — that is ORPO's trick, below.</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 330" role="img" aria-label="DPO vs PPO systems comparison">
+  <text x="190" y="28" text-anchor="middle" fill="#2b2620" font-size="17" font-weight="bold">PPO machine</text>
+  <text x="570" y="28" text-anchor="middle" fill="#2b2620" font-size="17" font-weight="bold">DPO equation</text>
+  <g font-size="14">
+    <rect x="30" y="44" width="320" height="44" rx="8" fill="#fffdf7" stroke="#e2d7c2"/><text x="190" y="71" text-anchor="middle" fill="#2b2620">policy π<tspan baseline-shift="sub" font-size="10">θ</tspan> (trained)</text>
+    <rect x="30" y="96" width="320" height="44" rx="8" fill="#fffdf7" stroke="#e2d7c2"/><text x="190" y="123" text-anchor="middle" fill="#2b2620">reference π<tspan baseline-shift="sub" font-size="10">ref</tspan> (frozen)</text>
+    <rect x="30" y="148" width="320" height="44" rx="8" fill="#f3e2e2" stroke="#a03d2d"/><text x="190" y="175" text-anchor="middle" fill="#a03d2d" text-decoration="line-through">reward model r<tspan baseline-shift="sub" font-size="10">φ</tspan> ✕ deleted</text>
+    <rect x="30" y="200" width="320" height="44" rx="8" fill="#f3e2e2" stroke="#a03d2d"/><text x="190" y="227" text-anchor="middle" fill="#a03d2d" text-decoration="line-through">value head V<tspan baseline-shift="sub" font-size="10">ψ</tspan> ✕ deleted</text>
+
+    <rect x="410" y="44" width="320" height="44" rx="8" fill="#fffdf7" stroke="#e2d7c2"/><text x="570" y="71" text-anchor="middle" fill="#2b2620">policy π<tspan baseline-shift="sub" font-size="10">θ</tspan> (trained)</text>
+    <rect x="410" y="96" width="320" height="44" rx="8" fill="#fffdf7" stroke="#e2d7c2"/><text x="570" y="123" text-anchor="middle" fill="#2b2620">reference π<tspan baseline-shift="sub" font-size="10">ref</tspan> (frozen — the KL anchor)</text>
+    <rect x="410" y="148" width="320" height="44" rx="8" fill="#e6f2e8" stroke="#1f6f6b"/><text x="570" y="175" text-anchor="middle" fill="#1f6f6b">implicit reward = β·log(π<tspan baseline-shift="sub" font-size="10">θ</tspan>/π<tspan baseline-shift="sub" font-size="10">ref</tspan>)</text>
+    <rect x="410" y="200" width="320" height="44" rx="8" fill="#e6f2e8" stroke="#1f6f6b"/><text x="570" y="227" text-anchor="middle" fill="#1f6f6b">one stable loss, one knob (β)</text>
+  </g>
+  <text x="190" y="270" text-anchor="middle" fill="#6f655a" font-size="13.5" font-style="italic">4 model copies + optimizer states</text>
+  <text x="190" y="292" text-anchor="middle" fill="#6f655a" font-size="13.5" font-style="italic">rollout loop: generation inside the training step</text>
+  <text x="570" y="270" text-anchor="middle" fill="#6f655a" font-size="13.5" font-style="italic">2 model copies — π<tspan baseline-shift="sub" font-size="10">ref</tspan> survives: DPO is not reference-free</text>
+  <text x="570" y="292" text-anchor="middle" fill="#6f655a" font-size="13.5" font-style="italic">rollouts: deleted — but so is exploration</text>
+  <text x="380" y="316" text-anchor="middle" fill="#c05621" font-size="14" font-weight="bold">on-policy, explores (PPO) vs off-policy, memorizes (DPO)</text>
+</svg>
+<div class="cap">Figure 3 — The systems bill. DPO deletes two model copies and the entire rollout loop —
+but the frozen reference is load-bearing, and deleting rollouts deletes exploration.</div>
+</div>
+
+<p><strong>Third, the length leak</strong> — the token-count ghost's third appearance. Log
+π<sub>θ</sub>(y|x) is a <em>sum over token log-probs</em>, so a longer completion accumulates a
+larger-magnitude implicit reward whether or not it is better. SFT said "watch token count, not
+example count" for masked-CE averaging; PPO inherited it as token-level loss normalization; DPO
+inherits it as a <strong>length bias</strong> that lets verbosity masquerade as quality. SimPO's
+fix — dividing the log-ratio by |y| — is the same lesson wearing new clothes.</p>
+
+<h2><span class="n">5</span>Production practice — off-policy and its price</h2>
+<p>DPO is <strong>fully off-policy</strong>: it trains on static preference pairs and never
+generates during training. That deletes the rollout bottleneck — the entire reason B8 exists
+for PPO — but it also deletes <em>exploration</em>. The policy can never learn from a
+completion it never sees, and once it drifts from the preference distribution there is no
+online correction the way PPO's fresh rollouts provide.</p>
+<p>Practitioners answer with <strong>iterative (online) DPO</strong>: regenerate preference data
+from the current policy between rounds — score new completions, rebuild pairs, train again —
+recovering some of PPO's exploration at a fraction of the cost. Think of it as DPO with a
+scheduled data-refresh cron job: each round's policy becomes the next round's data generator,
+shrinking the distribution gap the offline loss would otherwise compound.</p>
+<p>DPO also still <strong>over-optimizes</strong>. The implicit reward is a reward model with no
+separate parameters, and B4's curve survives: the log-ratio can be pushed into regions the
+reference never modeled, especially under a weak reference. The mitigation playbook is B4's
+playbook — iterate, re-anchor, and remember that pushing β up buys expressiveness at the cost
+of the KL leash.</p>
+
+<h2><span class="n">6</span>The variant family tree — each named for the bill it pays</h2>
+<p>DPO's elegance comes with three bills: the reference-model tax (two copies, one frozen), the
+length leak, and the noise sensitivity. Every major variant pays one of them. Know the
+<em>pattern</em>, not just the acronyms:</p>
+
+<div class="diagram">
+<svg viewBox="0 0 760 400" role="img" aria-label="DPO variant family tree">
+  <rect x="20" y="150" width="170" height="100" rx="12" fill="#fbf4e4" stroke="#c05621" stroke-width="2.5"/>
+  <text x="105" y="188" text-anchor="middle" fill="#2b2620" font-size="17" font-weight="bold">DPO</text>
+  <text x="105" y="212" text-anchor="middle" fill="#6f655a" font-size="13">the elegant equation</text>
+  <text x="105" y="232" text-anchor="middle" fill="#6f655a" font-size="13">…with three bills</text>
+
+  <g font-size="13">
+    <g stroke="#1f6f6b" stroke-width="2" fill="none">
+      <line x1="190" y1="200" x2="400" y2="62"/><polygon points="400,62 390,66 393,55" fill="#1f6f6b" stroke="none"/>
+      <line x1="190" y1="200" x2="400" y2="152"/><polygon points="400,152 390,156 393,145" fill="#1f6f6b" stroke="none"/>
+      <line x1="190" y1="200" x2="400" y2="248"/><polygon points="400,248 390,252 393,241" fill="#1f6f6b" stroke="none"/>
+      <line x1="190" y1="200" x2="400" y2="342"/><polygon points="400,342 390,346 393,335" fill="#1f6f6b" stroke="none"/>
+    </g>
+
+    <rect x="400" y="24" width="340" height="76" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="570" y="48" text-anchor="middle" fill="#2b2620" font-size="15" font-weight="bold">IPO <tspan fill="#6f655a" font-weight="normal" font-size="12">· Azar et al.</tspan></text>
+    <text x="570" y="70" text-anchor="middle" fill="#a03d2d" font-size="12.5" font-style="italic">pays: BT-margin overfitting</text>
+    <text x="570" y="90" text-anchor="middle" fill="#6f655a" font-size="12.5">quadratic regularization — stops overfitting deterministic preferences</text>
+
+    <rect x="400" y="114" width="340" height="76" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="570" y="138" text-anchor="middle" fill="#2b2620" font-size="15" font-weight="bold">KTO <tspan fill="#6f655a" font-weight="normal" font-size="12">· Ethayarajh et al.</tspan></text>
+    <text x="570" y="160" text-anchor="middle" fill="#a03d2d" font-size="12.5" font-style="italic">pays: needs pairwise feedback</text>
+    <text x="570" y="180" text-anchor="middle" fill="#6f655a" font-size="12.5">prospect-theory loss on thumbs-up/down — no pairs needed</text>
+
+    <rect x="400" y="210" width="340" height="76" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="570" y="234" text-anchor="middle" fill="#2b2620" font-size="15" font-weight="bold">ORPO <tspan fill="#6f655a" font-weight="normal" font-size="12">· Hong et al.</tspan></text>
+    <text x="570" y="256" text-anchor="middle" fill="#a03d2d" font-size="12.5" font-style="italic">pays: reference-model tax</text>
+    <text x="570" y="276" text-anchor="middle" fill="#6f655a" font-size="12.5">odds-ratio preference term folded into SFT — no π<tspan baseline-shift="sub" font-size="9">ref</tspan></text>
+
+    <rect x="400" y="304" width="340" height="76" rx="10" fill="#fffdf7" stroke="#e2d7c2"/>
+    <text x="570" y="328" text-anchor="middle" fill="#2b2620" font-size="15" font-weight="bold">SimPO <tspan fill="#6f655a" font-weight="normal" font-size="12">· Meng et al.</tspan></text>
+    <text x="570" y="350" text-anchor="middle" fill="#a03d2d" font-size="12.5" font-style="italic">pays: length leak (+ reference tax)</text>
+    <text x="570" y="370" text-anchor="middle" fill="#6f655a" font-size="12.5">length-normalized, reference-free, explicit margin</text>
+  </g>
+</svg>
+<div class="cap">Figure 4 — The family tree. DPO sits at the root; every branch answers one of DPO's three
+bills: the BT-margin overfitting, the binary-feedback gap, the reference-model tax, or the length leak.</div>
+</div>
+
+<p><strong>IPO</strong> (Azar et al., 2023) adds a quadratic regularization term so the model
+stops overfitting the Bradley–Terry margin — the answer to "why does DPO overfit deterministic
+preferences?" <strong>KTO</strong> (Ethayarajh et al., 2024) replaces win/lose pairs with binary
+thumbs-up/down feedback via prospect theory, for when you have "good/bad" but no "A beats B".
+<strong>ORPO</strong> (Hong et al., 2024) folds an odds-ratio preference term directly into SFT
+— no reference model, a single training run. <strong>SimPO</strong> (Meng et al., 2024) drops
+the reference model, normalizes by length, and adds an explicit margin — the length-leak fix
+plus reference-tax relief in one.</p>
+
+<div class="deepdive">
+<h4>📄 Deep dive — the variant papers</h4>
+<ul>
+<li><a href="https://arxiv.org/abs/2310.12036">A General Theoretical Paradigm to Understand Learning from Human Preferences (IPO)</a> (Azar et al., 2023) — good for: why DPO overfits deterministic preferences, and the quadratic fix that bounds the BT margin.</li>
+<li><a href="https://arxiv.org/abs/2402.01306">KTO: Model Alignment as Prospect-Theoretic Optimization</a> (Ethayarajh et al., 2024) — good for: aligning from binary good/bad feedback alone, and the prospect-theory framing of gains vs losses.</li>
+<li><a href="https://arxiv.org/abs/2403.07691">ORPO: Monolithic Preference Optimization without Reference Model</a> (Hong et al., 2024) — good for: folding preference optimization into SFT itself and deleting the reference model entirely.</li>
+<li><a href="https://arxiv.org/abs/2405.14734">SimPO: Simple Preference Optimization with a Reference-Free Reward</a> (Meng et al., 2024) — good for: the length-normalized, reference-free formulation and why the explicit margin fixes the length leak.</li>
+</ul>
+</div>
+
+<h2><span class="n">7</span>The 8 gotchas — know the <em>why</em></h2>
+
+<div class="gotcha"><strong>1. Deleting π_ref.</strong> DPO is not reference-free — the frozen
+reference is the KL anchor, and the implicit reward is a log-<em>ratio</em> against it. Drop
+π_ref from the loss and you have a different algorithm (that's ORPO's territory).</div>
+<div class="gotcha"><strong>2. Trusting the transitivity assumption.</strong> The closed form is
+exact only if the data is consistent with a single Bradley–Terry reward. Noisy labels, cyclic
+preferences, or genuinely multimodal "good" answers mean DPO fits a reward that doesn't exist —
+it memorizes the noise.</div>
+<div class="gotcha"><strong>3. Assuming online behavior.</strong> DPO never generates during
+training. Once the policy drifts from the static preference distribution, there is no online
+correction — the very thing iterative/online DPO exists to recover.</div>
+<div class="gotcha"><strong>4. The length leak.</strong> The implicit reward sums token
+log-probs, so verbosity accumulates reward. If your preference data correlates length with
+quality, DPO will happily learn "longer = better". Normalize or pay.</div>
+<div class="gotcha"><strong>5. Believing the judge is gone.</strong> The judge went
+<em>implicit</em>, not away. B4's over-optimization curve survives: push the log-ratio far
+enough from the reference and you're off the modeled manifold, especially under a weak
+reference.</div>
+<div class="gotcha"><strong>6. Treating β as "just temperature".</strong> It is the KL-penalty
+strength wearing a new costume. Too small and the preference signal can't move the policy off
+the reference; too large and the policy collapses into the loudest pairs with no leash.</div>
+<div class="gotcha"><strong>7. Forgetting the SFT start matters.</strong> π_ref is usually your
+SFT model. A sloppy SFT (template-broken, style-overfit) doesn't just hurt the policy — it
+<em>is</em> the reward's denominator. B2's data-quality bill lands here too.</div>
+<div class="gotcha"><strong>8. Reaching for DPO when reward only reveals through
+trajectories.</strong> Agentic tool use, multi-step reasoning with sparse outcomes — static
+(win, lose) pairs can't teach what exploration finds. That's the PPO/online case, or the RLVR
+escape hatch in B9.</div>
+<h2><span class="n">8</span>Self-test</h2>
+<p>Cover the answers. Say each one aloud until it's clean.</p>
+
+<details><summary>1. Write the KL-constrained objective DPO starts from, and its closed-form solution.</summary>
+<p><code>max_π E_{y∼π}[r(x,y)] − β·KL(π(·|x) ‖ π_ref(·|x))</code> → a Boltzmann distribution:
+<code>π*(y|x) = π_ref(y|x)·exp(r(x,y)/β) / Z(x)</code>, where Z(x) normalizes over y.</p></details>
+
+<details><summary>2. Read that solution backwards: what is the reward, exactly?</summary>
+<p><code>r(x,y) = β·log(π*(y|x)/π_ref(y|x)) + β·log Z(x)</code> — the reward is β times the
+log-ratio of optimal policy to reference, plus a prompt-dependent constant. Any policy encodes
+a reward in its own log-ratios.</p></details>
+
+<details><summary>3. Where does the partition function Z(x) cancel, and why is that the key step?</summary>
+<p>When you plug the reward expression into the Bradley–Terry model
+<code>p(y_w ≻ y_l) = σ(r(x,y_w) − r(x,y_l))</code>, Z(x) appears in both terms and vanishes in
+the difference. Without that cancellation you'd need to compute an intractable normalizer per
+prompt — the loss would be untrainable.</p></details>
+
+<details><summary>4. Read the gradient as classification: what does the weight σ(r̂_l − r̂_w) do, and what did PPO use for the same job?</summary>
+<p>It upweights exactly the pairs the model currently ranks wrongly (weight ≈ 1) and switches
+off mastered pairs (weight → 0). PPO used the <em>engineered</em> clip for this "don't get
+rich on one token" caution; DPO's weight is the same caution arrived at <em>analytically</em>.</p></details>
+
+<details><summary>5. β too small vs too large — what breaks at each extreme?</summary>
+<p>β is the KL-penalty strength (surviving as the implicit reward's temperature). Too small:
+the log-ratios stay leashed to the reference and the preference signal can't move the policy.
+Too large: preferences move the policy aggressively with no leash — collapse into the loudest
+pairs, off-reference regions, and B4-style over-optimization of the implicit reward.</p></details>
+
+<details><summary>6. Why is DPO label-noise-sensitive where PPO can route around bad labels?</summary>
+<p>Two reasons: (a) the derivation assumes preferences are consistent with a single
+Bradley–Terry reward (transitivity) — noise/cyclic preferences mean fitting a reward that
+doesn't exist; (b) DPO is fully off-policy, so bad labels are memorized by a static loss,
+while PPO's online rollouts can route around them. This is why HH-dataset inconsistencies bite
+DPO harder.</p></details>
+
+<details><summary>7. Two copies vs four — but which copy can you NOT delete, and why? What does that imply for the design-doc line?</summary>
+<p>π_ref, frozen: it's the KL anchor, and the implicit reward is a log-ratio <em>against</em>
+it. DPO halves the memory bill (policy + reference vs PPO's four copies + optimizer states)
+but is <em>not</em> reference-free — that's ORPO's trick. In the F1 design doc: two copies is
+the line that decides which algorithm your cluster can afford.</p></details>
+
+<details><summary>8. Explain the length leak, SimPO's fix, and the token-count ghost's history.</summary>
+<p>Log π_θ(y|x) sums token log-probs, so longer completions accumulate larger-magnitude
+implicit rewards regardless of quality — verbosity masquerades as quality. SimPO divides the
+log-ratio by |y| (length normalization), drops the reference, and adds an explicit margin.
+Same ghost as SFT's "watch token count, not example count" masked-CE averaging and PPO's
+token-level loss normalization — third appearance.</p></details>
+
+<details><summary>9. "Why did DPO spread so fast, and when would you still pick PPO?" — say the 30-second version from memory.</summary>
+<p>Same objective as RLHF, closed-form solution, invert to get reward = β·log-ratio + const,
+plug into Bradley–Terry, Z cancels → pure classification on (prompt, winner, loser) pairs —
+no reward model, no value head, no rollouts, two copies instead of four, one stable loss. Price:
+off-policy (no exploration), noise-sensitive, length-biased — the IPO/KTO/ORPO/SimPO family
+each fixes one bill. Pick DPO with clean preference data and a strong SFT start; keep PPO or
+go online when the reward only reveals itself through trajectories, like agentic tool use.</p></details>
+
+<div class="takeaway">
+<h3>🎯 Your 30-second interview answer</h3>
+<p>"DPO starts from the observation that the KL-constrained RL objective PPO optimizes has a
+closed-form solution: the optimal policy is the reference tilted by exp(r/β). Invert it and
+the reward is just β times the log-ratio of policy to reference, plus a prompt-dependent
+constant. Plug that into the Bradley–Terry preference model and the constant cancels, leaving
+a pure classification loss on (prompt, winner, loser) pairs — negative log-sigmoid of the
+β-scaled log-ratio difference. The gradient upweights exactly the pairs the model still ranks
+wrongly. So DPO optimizes the same objective as RLHF with no reward model, no value head, no
+rollouts, no clip — two model copies instead of four, one stable loss. The price: fully
+off-policy, so no exploration and no online correction; sensitive to label noise; a length bias
+because log-probs sum over tokens — that's what IPO, KTO, ORPO, and SimPO each fix. I'd pick
+DPO with clean preference data and a strong SFT start; I'd keep PPO — or go online — when the
+reward only reveals itself through trajectories, like agentic tool use, where static pairs
+can't teach what exploration finds."</p>
+</div>
+
+<footer>
+  The Infra Notebook · Study Guides · October 2026<br>
+  Builds on: B5 PPO · B3 RLHF pipeline · B4 reward modeling · Connects to: B7 GRPO ("DPO removes the judge, GRPO removes the critic") → B9 RLVR → B8 RL infra → B2 preference data → F1 memory budgets
+</footer>
+
+</div>
+</body>
+</html>
